@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Daniel Spiewak
+ * Copyright 2020 Daniel Spiewak
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,16 +14,13 @@
  * limitations under the License.
  */
 
-name := "fs2-netty"
+package fs2
+package netty
 
-ThisBuild / baseVersion := "0.1"
+trait Socket[F[_]] {
+  def read: F[Chunk[Byte]]
+  def write(bytes: Chunk[Byte]): F[Unit]
 
-ThisBuild / organization := "com.codecommit"
-ThisBuild / publishGithubUser := "djspiewak"
-ThisBuild / publishFullName := "Daniel Spiewak"
-
-ThisBuild / crossScalaVersions := Seq("2.13.4")
-
-libraryDependencies ++= Seq(
-  "io.netty" % "netty-all" % "4.1.56.Final",
-  "co.fs2"  %% "fs2-core"  % "3.0-21-1e66f47")
+  def isOpen: F[Boolean]
+  def close: F[Unit]
+}
