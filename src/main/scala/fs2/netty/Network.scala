@@ -37,19 +37,26 @@ final class Network[F[_]: Async] private (
     serverChannelClazz: Class[_ <: ServerChannel]) {
 
   def client(addr: InetSocketAddress, reuseAddress: Boolean = true, keepAlive: Boolean = false, noDelay: Boolean = false): Resource[F, Socket[F]] =
-    Dispatcher[F] evalMap { disp =>
-      Concurrent[F].deferred[Socket[F]] flatMap { d =>
-        Sync[F] defer {
-          val bootstrap = new Bootstrap
-          bootstrap.group(child)
-            .channel(clientChannelClazz)
-            .option(ChannelOption.AUTO_READ.asInstanceOf[ChannelOption[Any]], false)   // backpressure
-            .option(ChannelOption.SO_REUSEADDR.asInstanceOf[ChannelOption[Any]], reuseAddress)
-            .option(ChannelOption.SO_KEEPALIVE.asInstanceOf[ChannelOption[Any]], keepAlive)
-            .option(ChannelOption.TCP_NODELAY.asInstanceOf[ChannelOption[Any]], noDelay)
-            .handler(initializer(disp)(d.complete(_).void))
+    Dispatcher[F] flatMap { disp =>
+      Resource suspend {
+        Concurrent[F].deferred[Socket[F]] flatMap { d =>
+          Sync[F] delay {
+            val bootstrap = new Bootstrap
+            bootstrap.group(child)
+              .channel(clientChannelClazz)
+              .option(ChannelOption.AUTO_READ.asInstanceOf[ChannelOption[Any]], false)   // backpressure
+              .option(ChannelOption.SO_REUSEADDR.asInstanceOf[ChannelOption[Any]], reuseAddress)
+              .option(ChannelOption.SO_KEEPALIVE.asInstanceOf[ChannelOption[Any]], keepAlive)
+              .option(ChannelOption.TCP_NODELAY.asInstanceOf[ChannelOption[Any]], noDelay)
+              .handler(initializer(disp)(d.complete(_).void))
 
-          fromNettyFuture[F](bootstrap.connect(addr).pure[F]) *> d.get
+            val connectChannel = Sync[F] defer {
+              val cf = bootstrap.connect(addr)
+              fromNettyFuture[F](cf.pure[F]).as(cf.channel())
+            }
+
+            Resource.make(connectChannel <* d.get)(ch => fromNettyFuture(Sync[F].delay(ch.close())).void).evalMap(_ => d.get)
+          }
         }
       }
     }
@@ -69,10 +76,13 @@ final class Network[F[_]: Async] private (
                 .channel(serverChannelClazz)
                 .childHandler(initializer(disp)(sockets.offer))
 
-              val f = bootstrap.bind(addr)
+              val connectChannel = Sync[F] defer {
+                val cf = bootstrap.bind(addr)
+                fromNettyFuture[F](cf.pure[F]).as(cf.channel())
+              }
 
-              Stream.bracket(fromNettyFuture[F](f.pure[F])) { _ =>
-                fromNettyFuture[F](Sync[F].delay(f.channel().close())).void
+              Stream.bracket(connectChannel) { ch =>
+                fromNettyFuture[F](Sync[F].delay(ch.close())).void
               }
             }
           }
