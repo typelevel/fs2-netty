@@ -28,7 +28,7 @@ import io.netty.channel.nio.NioEventLoopGroup
 import io.netty.channel.socket.nio.{NioServerSocketChannel, NioSocketChannel}
 import io.netty.channel.socket.SocketChannel
 
-import java.net.InetSocketAddress
+import java.net.{InetAddress, InetSocketAddress}
 
 final class Network[F[_]: Async] private (
     parent: EventLoopGroup,
@@ -36,7 +36,11 @@ final class Network[F[_]: Async] private (
     clientChannelClazz: Class[_ <: Channel],
     serverChannelClazz: Class[_ <: ServerChannel]) {
 
-  def client(addr: InetSocketAddress, reuseAddress: Boolean = true, keepAlive: Boolean = false, noDelay: Boolean = false): Resource[F, Socket[F]] =
+  def client(addr: InetSocketAddress,
+      reuseAddress: Boolean = true,
+      keepAlive: Boolean = false,
+      noDelay: Boolean = false)
+      : Resource[F, Socket[F]] =
     Dispatcher[F] flatMap { disp =>
       Resource suspend {
         Concurrent[F].deferred[Socket[F]] flatMap { d =>
@@ -61,38 +65,66 @@ final class Network[F[_]: Async] private (
       }
     }
 
-  def server(addr: InetSocketAddress, reuseAddress: Boolean = true, keepAlive: Boolean = false, noDelay: Boolean = false): Stream[F, Socket[F]] =
-    Stream.resource(Dispatcher[F]) flatMap { disp =>
-      Stream force {
-        Queue.synchronous[F, Socket[F]] map { sockets =>
-          val server = Stream force {
-            Sync[F] delay {
-              val bootstrap = new ServerBootstrap
-              bootstrap.group(parent, child)
-                .option(ChannelOption.AUTO_READ.asInstanceOf[ChannelOption[Any]], false)   // backpressure
-                .option(ChannelOption.SO_REUSEADDR.asInstanceOf[ChannelOption[Any]], reuseAddress)
-                .option(ChannelOption.SO_KEEPALIVE.asInstanceOf[ChannelOption[Any]], keepAlive)
-                .option(ChannelOption.TCP_NODELAY.asInstanceOf[ChannelOption[Any]], noDelay)
-                .channel(serverChannelClazz)
-                .childHandler(initializer(disp)(sockets.offer))
+  def server(
+      addr: InetSocketAddress,
+      reuseAddress: Boolean = true,
+      keepAlive: Boolean = false,
+      noDelay: Boolean = false)
+      : Stream[F, Socket[F]] = {
+    val connection = Stream resource {
+      serverResource(
+        addr.getAddress(),
+        Some(addr.getPort()),
+        reuseAddress = reuseAddress,
+        keepAlive = keepAlive,
+        noDelay = noDelay)
+    }
 
-              val connectChannel = Sync[F] defer {
-                val cf = bootstrap.bind(addr)
-                fromNettyFuture[F](cf.pure[F]).as(cf.channel())
-              }
+    connection.flatMap(_._2)
+  }
 
-              Stream.bracket(connectChannel) { ch =>
-                fromNettyFuture[F](Sync[F].delay(ch.close())).void
-              }
+  def serverResource(
+      host: InetAddress,
+      port: Option[Int],
+      reuseAddress: Boolean = true,
+      keepAlive: Boolean = false,
+      noDelay: Boolean = false)
+      : Resource[F, (InetSocketAddress, Stream[F, Socket[F]])] =
+    Dispatcher[F] flatMap { disp =>
+      Resource suspend {
+        Queue.synchronous[F, Socket[F]] flatMap { sockets =>
+          Sync[F] delay {
+            val bootstrap = new ServerBootstrap
+            bootstrap.group(parent, child)
+              .option(ChannelOption.AUTO_READ.asInstanceOf[ChannelOption[Any]], false)   // backpressure
+              .option(ChannelOption.SO_REUSEADDR.asInstanceOf[ChannelOption[Any]], reuseAddress)
+              .option(ChannelOption.SO_KEEPALIVE.asInstanceOf[ChannelOption[Any]], keepAlive)
+              .option(ChannelOption.TCP_NODELAY.asInstanceOf[ChannelOption[Any]], noDelay)
+              .channel(serverChannelClazz)
+              .childHandler(initializer(disp)(sockets.offer))
+
+            val connectChannel = Sync[F] defer {
+              val cf = bootstrap.bind(new InetSocketAddress(host, port.getOrElse(0)))
+              fromNettyFuture[F](cf.pure[F]).as(cf.channel())
+            }
+
+            val connection = Resource.make(connectChannel) { ch =>
+              fromNettyFuture[F](Sync[F].delay(ch.close())).void
+            }
+
+            connection evalMap { ch =>
+              Sync[F].delay(ch.localAddress().asInstanceOf[InetSocketAddress]).tupleRight(
+                Stream.repeatEval(sockets.take))
             }
           }
-
-          server *> Stream.repeatEval(sockets.take)
         }
       }
     }
 
-  private[this] def initializer(disp: Dispatcher[F])(result: Socket[F] => F[Unit]): ChannelInitializer[SocketChannel] =
+  private[this] def initializer(
+      disp: Dispatcher[F])(
+      result: Socket[F] => F[Unit])
+      : ChannelInitializer[SocketChannel] =
     new ChannelInitializer[SocketChannel] {
       def initChannel(ch: SocketChannel) = {
         val p = ch.pipeline()
