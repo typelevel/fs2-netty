@@ -18,8 +18,12 @@ package fs2
 package netty
 
 trait Socket[F[_]] {
+
   def read: F[Chunk[Byte]]
+  def reads: Stream[F, Byte]
+
   def write(bytes: Chunk[Byte]): F[Unit]
+  def writes: Pipe[F, Byte, INothing]
 
   def isOpen: F[Boolean]
   def close: F[Unit]

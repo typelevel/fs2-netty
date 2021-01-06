@@ -17,6 +17,7 @@
 package fs2
 package netty
 
+import cats.Functor
 import cats.effect.{Async, Sync}
 import cats.effect.std.{Dispatcher, Queue}
 import cats.syntax.all._
@@ -35,8 +36,18 @@ private final class SocketHandler[F[_]: Async](
   val read: F[Chunk[Byte]] =
     Sync[F].delay(channel.read()) *> chunks.take.map(toChunk)
 
+  lazy val reads: Stream[F, Byte] =
+    Stream force {
+      Functor[F].ifF(isOpen)(
+        Stream.evalUnChunk(read) ++ reads,
+        Stream.empty)
+    }
+
   def write(bytes: Chunk[Byte]): F[Unit] =
     fromNettyFuture[F](Sync[F].delay(channel.writeAndFlush(toByteBuf(bytes)))).void
+
+  val writes: Pipe[F, Byte, INothing] =
+    _.chunks.evalMap(c => write(c) *> isOpen).takeWhile(b => b).drain
 
   val isOpen: F[Boolean] =
     Sync[F].delay(channel.isOpen())
