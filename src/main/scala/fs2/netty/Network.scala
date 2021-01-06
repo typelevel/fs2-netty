@@ -17,15 +17,15 @@
 package fs2
 package netty
 
-import cats.effect.{Async, Resource, Sync}
+import cats.effect.{Async, Concurrent, Resource, Sync}
 import cats.effect.std.{Dispatcher, Queue}
 import cats.syntax.all._
 
-import io.netty.bootstrap.ServerBootstrap
+import io.netty.bootstrap.{Bootstrap, ServerBootstrap}
 import io.netty.buffer.ByteBuf
-import io.netty.channel.{ChannelInitializer, ChannelOption, EventLoopGroup, ServerChannel}
+import io.netty.channel.{Channel, ChannelInitializer, ChannelOption, EventLoopGroup, ServerChannel}
 import io.netty.channel.nio.NioEventLoopGroup
-import io.netty.channel.socket.nio.NioServerSocketChannel
+import io.netty.channel.socket.nio.{NioServerSocketChannel, NioSocketChannel}
 import io.netty.channel.socket.SocketChannel
 
 import java.net.InetSocketAddress
@@ -33,7 +33,26 @@ import java.net.InetSocketAddress
 final class Network[F[_]: Async] private (
     parent: EventLoopGroup,
     child: EventLoopGroup,
-    channelClazz: Class[_ <: ServerChannel]) {
+    clientChannelClazz: Class[_ <: Channel],
+    serverChannelClazz: Class[_ <: ServerChannel]) {
+
+  def client(addr: InetSocketAddress, reuseAddress: Boolean = true, keepAlive: Boolean = false, noDelay: Boolean = false): Resource[F, Socket[F]] =
+    Dispatcher[F] evalMap { disp =>
+      Concurrent[F].deferred[Socket[F]] flatMap { d =>
+        Sync[F] defer {
+          val bootstrap = new Bootstrap
+          bootstrap.group(child)
+            .channel(clientChannelClazz)
+            .option(ChannelOption.AUTO_READ.asInstanceOf[ChannelOption[Any]], false)   // backpressure
+            .option(ChannelOption.SO_REUSEADDR.asInstanceOf[ChannelOption[Any]], reuseAddress)
+            .option(ChannelOption.SO_KEEPALIVE.asInstanceOf[ChannelOption[Any]], keepAlive)
+            .option(ChannelOption.TCP_NODELAY.asInstanceOf[ChannelOption[Any]], noDelay)
+            .handler(initializer(disp)(d.complete(_).void))
+
+          fromNettyFuture[F](bootstrap.connect(addr).pure[F]) *> d.get
+        }
+      }
+    }
 
   def server(addr: InetSocketAddress, reuseAddress: Boolean = true, keepAlive: Boolean = false, noDelay: Boolean = false): Stream[F, Socket[F]] =
     Stream.resource(Dispatcher[F]) flatMap { disp =>
@@ -47,19 +66,8 @@ final class Network[F[_]: Async] private (
                 .option(ChannelOption.SO_REUSEADDR.asInstanceOf[ChannelOption[Any]], reuseAddress)
                 .option(ChannelOption.SO_KEEPALIVE.asInstanceOf[ChannelOption[Any]], keepAlive)
                 .option(ChannelOption.TCP_NODELAY.asInstanceOf[ChannelOption[Any]], noDelay)
-                .channel(channelClazz)
-                .childHandler(new ChannelInitializer[SocketChannel] {
-                  def initChannel(ch: SocketChannel) = {
-                    val p = ch.pipeline()
-
-                    disp unsafeRunSync {
-                      val handlerF = Queue.synchronous[F, ByteBuf].map(new SocketHandler[F](disp, ch, _))
-                      handlerF flatMap { s =>
-                        Sync[F].delay(p.addLast(s)) *> sockets.offer(s)
-                      }
-                    }
-                  }
-                })
+                .channel(serverChannelClazz)
+                .childHandler(initializer(disp)(sockets.offer))
 
               val f = bootstrap.bind(addr)
 
@@ -73,19 +81,34 @@ final class Network[F[_]: Async] private (
         }
       }
     }
+
+  private[this] def initializer(disp: Dispatcher[F])(result: Socket[F] => F[Unit]): ChannelInitializer[SocketChannel] =
+    new ChannelInitializer[SocketChannel] {
+      def initChannel(ch: SocketChannel) = {
+        val p = ch.pipeline()
+
+        disp unsafeRunSync {
+          val handlerF = Queue.synchronous[F, ByteBuf].map(new SocketHandler[F](disp, ch, _))
+          handlerF flatMap { s =>
+            Sync[F].delay(p.addLast(s)) *> result(s)
+          }
+        }
+      }
+    }
 }
 
 object Network {
 
   // TODO detect niouring/epoll/kpoll
   private[this] val EventLoopConstr = classOf[NioEventLoopGroup].getDeclaredConstructor(classOf[Int])
-  private[this] val ChannelClazz = classOf[NioServerSocketChannel]
+  private[this] val ServerChannelClazz = classOf[NioServerSocketChannel]
+  private[this] val ClientChannelClazz = classOf[NioSocketChannel]
 
   def apply[F[_]: Async]: Resource[F, Network[F]] = {
     // TODO configure threads
     val instantiate = Sync[F].delay(EventLoopConstr.newInstance(1).asInstanceOf[EventLoopGroup])
     val instantiateR = Resource.make(instantiate)(elg => fromNettyFuture[F](Sync[F].delay(elg.shutdownGracefully())).void)
 
-    (instantiateR, instantiateR).mapN(new Network[F](_, _, ChannelClazz))
+    (instantiateR, instantiateR).mapN(new Network[F](_, _, ClientChannelClazz, ServerChannelClazz))
   }
 }
