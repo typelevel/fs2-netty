@@ -17,7 +17,12 @@
 package fs2
 package netty
 
+import java.net.InetSocketAddress
+
 trait Socket[F[_]] {
+
+  def localAddress: F[InetSocketAddress]
+  def remoteAddress: F[InetSocketAddress]
 
   def read: F[Chunk[Byte]]
   def reads: Stream[F, Byte]

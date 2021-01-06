@@ -26,12 +26,20 @@ import io.netty.buffer.{ByteBuf, Unpooled}
 import io.netty.channel.{ChannelHandlerContext, ChannelInboundHandlerAdapter}
 import io.netty.channel.socket.SocketChannel
 
+import java.net.InetSocketAddress
+
 private final class SocketHandler[F[_]: Async](
     disp: Dispatcher[F],
     channel: SocketChannel,
     chunks: Queue[F, ByteBuf])
     extends ChannelInboundHandlerAdapter
     with Socket[F] {
+
+  val localAddress: F[InetSocketAddress] =
+    Sync[F].delay(channel.localAddress())
+
+  val remoteAddress: F[InetSocketAddress] =
+    Sync[F].delay(channel.remoteAddress())
 
   val read: F[Chunk[Byte]] =
     Sync[F].delay(channel.read()) *> chunks.take.map(toChunk)
