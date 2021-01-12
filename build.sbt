@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Daniel Spiewak
+ * Copyright 2021 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,14 @@ name := "fs2-netty"
 
 ThisBuild / baseVersion := "0.1"
 
-ThisBuild / organization := "com.codecommit"
+ThisBuild / organization := "org.typelevel"
 ThisBuild / publishGithubUser := "djspiewak"
 ThisBuild / publishFullName := "Daniel Spiewak"
+
+ThisBuild / organization := "org.typelevel"
+ThisBuild / organizationName := "Typelevel"
+
+ThisBuild / startYear := Some(2021)
 
 ThisBuild / crossScalaVersions := Seq("2.13.4")
 
