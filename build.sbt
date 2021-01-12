@@ -26,4 +26,7 @@ ThisBuild / crossScalaVersions := Seq("2.13.4")
 
 libraryDependencies ++= Seq(
   "io.netty" % "netty-all" % "4.1.56.Final",
-  "co.fs2"  %% "fs2-core"  % "3.0-21-1e66f47")
+  "co.fs2"  %% "fs2-core"  % "3.0-21-1e66f47",
+
+  "org.specs2" %% "specs2-core" % "4.10.5" % Test,
+  "com.codecommit" %% "cats-effect-testing-specs2" % "1.0-25-c4685f2" % Test)

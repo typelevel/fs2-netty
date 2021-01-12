@@ -114,7 +114,7 @@ final class Network[F[_]: Async] private (
 
             connection evalMap { ch =>
               Sync[F].delay(ch.localAddress().asInstanceOf[InetSocketAddress]).tupleRight(
-                Stream.repeatEval(sockets.take))
+                Stream.repeatEval(Sync[F].delay(ch.read()) *> sockets.take))
             }
           }
         }

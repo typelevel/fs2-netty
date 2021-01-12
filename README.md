@@ -16,7 +16,7 @@ libraryDependencies += "com.codecommit" %% "fs2-netty" % "<version>"
 **Not production ready; barely has unit tests; please be nice.** Published for Scala 2.13.4. Probably shouldn't be published at all
 
 ```scala
-import cats.effect.{IO, ExitCode}
+import cats.effect.{IO, IOApp, ExitCode}
 import fs2.netty.Network
 import fs2.io.{stdin, stdout}
 import java.net.InetSocketAddress
