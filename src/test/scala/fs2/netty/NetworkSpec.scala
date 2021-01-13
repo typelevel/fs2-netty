@@ -25,7 +25,6 @@ import org.specs2.mutable.SpecificationLike
 import java.net.InetAddress
 
 class NetworkSpec extends CatsResource[IO, Network[IO]] with SpecificationLike {
-  sequential
 
   val resource = Network[IO]
 
