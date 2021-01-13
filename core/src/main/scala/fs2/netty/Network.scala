@@ -148,7 +148,11 @@ object Network {
 
   def apply[F[_]: Async]: Resource[F, Network[F]] = {
     // TODO configure threads
-    val instantiate = Sync[F].delay(EventLoopConstr.newInstance(1).asInstanceOf[EventLoopGroup])
+    val instantiate = Sync[F] delay {
+      val result = EventLoopConstr.newInstance(new Integer(1))
+      result.asInstanceOf[EventLoopGroup]
+    }
+
     val instantiateR = Resource.make(instantiate)(elg => fromNettyFuture[F](Sync[F].delay(elg.shutdownGracefully())).void)
 
     (instantiateR, instantiateR).mapN(new Network[F](_, _, ClientChannelClazz, ServerChannelClazz))

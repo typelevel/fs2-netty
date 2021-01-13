@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-name := "fs2-netty"
-
 ThisBuild / baseVersion := "0.1"
 
 ThisBuild / organization := "org.typelevel"
@@ -27,11 +25,21 @@ ThisBuild / organizationName := "Typelevel"
 
 ThisBuild / startYear := Some(2021)
 
-ThisBuild / crossScalaVersions := Seq("2.13.4")
+ThisBuild / crossScalaVersions := Seq("2.12.12", "2.13.4", "3.0.0-M3")
 
-libraryDependencies ++= Seq(
-  "io.netty" % "netty-all" % "4.1.56.Final",
-  "co.fs2"  %% "fs2-core"  % "3.0-21-1e66f47",
+lazy val root = project.in(file("."))
+  .aggregate(core, benchmarks)
+  .enablePlugins(NoPublishPlugin)
 
-  "org.specs2" %% "specs2-core" % "4.10.5" % Test,
-  "com.codecommit" %% "cats-effect-testing-specs2" % "1.0-26-0b34520" % Test)
+lazy val core = project.in(file("core"))
+  .settings(
+    name := "fs2-netty",
+    libraryDependencies ++= Seq(
+      "io.netty" % "netty-all" % "4.1.56.Final",
+      "co.fs2"  %% "fs2-core"  % "3.0-21-1e66f47",
+
+      "com.codecommit" %% "cats-effect-testing-specs2" % "1.0-26-0b34520" % Test))
+
+lazy val benchmarks = project.in(file("benchmarks"))
+  .dependsOn(core)
+  .enablePlugins(NoPublishPlugin)
