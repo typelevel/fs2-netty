@@ -128,6 +128,7 @@ final class Network[F[_]: Async] private (
     new ChannelInitializer[SocketChannel] {
       def initChannel(ch: SocketChannel) = {
         val p = ch.pipeline()
+        ch.config().setAutoRead(false)
 
         disp unsafeRunSync {
           val handlerF = Queue.synchronous[F, ByteBuf].map(new SocketHandler[F](disp, ch, _))

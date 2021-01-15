@@ -27,6 +27,8 @@ ThisBuild / startYear := Some(2021)
 
 ThisBuild / crossScalaVersions := Seq("2.12.12", "2.13.4", "3.0.0-M3")
 
+val Fs2Version = "3.0-57-3fb340a"
+
 lazy val root = project.in(file("."))
   .aggregate(core, benchmarks)
   .enablePlugins(NoPublishPlugin)
@@ -36,10 +38,13 @@ lazy val core = project.in(file("core"))
     name := "fs2-netty",
     libraryDependencies ++= Seq(
       "io.netty" % "netty-all" % "4.1.56.Final",
-      "co.fs2"  %% "fs2-core"  % "3.0-21-1e66f47",
+      "co.fs2"  %% "fs2-core"  % Fs2Version,
 
       "com.codecommit" %% "cats-effect-testing-specs2" % "1.0-26-0b34520" % Test))
 
 lazy val benchmarks = project.in(file("benchmarks"))
   .dependsOn(core)
+  .settings(
+    libraryDependencies += "co.fs2" %% "fs2-io" % Fs2Version,
+    run / fork := true)
   .enablePlugins(NoPublishPlugin)
