@@ -17,7 +17,7 @@
 package fs2
 package netty
 
-import cats.{Applicative, ApplicativeError, Functor}
+import cats.{Applicative, Functor}
 import cats.effect.{Async, Poll, Sync}
 import cats.effect.std.{Dispatcher, Queue}
 import cats.syntax.all._
@@ -26,10 +26,7 @@ import io.netty.buffer.{ByteBuf, Unpooled}
 import io.netty.channel.{ChannelHandlerContext, ChannelInboundHandlerAdapter}
 import io.netty.channel.socket.SocketChannel
 
-import scala.annotation.tailrec
-
 import java.net.InetSocketAddress
-import java.util.concurrent.atomic.AtomicReference
 
 private final class SocketHandler[F[_]: Async] (
     disp: Dispatcher[F],
@@ -109,7 +106,7 @@ private final class SocketHandler[F[_]: Async] (
       ???
 }
 
-object SocketHandler {
+private object SocketHandler {
   def apply[F[_]: Async](disp: Dispatcher[F], channel: SocketChannel): F[SocketHandler[F]] =
     Queue.unbounded[F, AnyRef] map { bufs =>
       new SocketHandler(disp, channel, bufs)

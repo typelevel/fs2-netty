@@ -22,8 +22,6 @@ import cats.effect.testing.specs2.CatsResource
 
 import org.specs2.mutable.SpecificationLike
 
-import java.net.InetAddress
-
 class NetworkSpec extends CatsResource[IO, Network[IO]] with SpecificationLike {
 
   val resource = Network[IO]
@@ -36,7 +34,7 @@ class NetworkSpec extends CatsResource[IO, Network[IO]] with SpecificationLike {
     "support a simple echo use-case" in withResource { net =>
       val data = List[Byte](1, 2, 3, 4, 5, 6, 7)
 
-      val rsrc = net.serverResource(InetAddress.getLocalHost(), None) flatMap {
+      val rsrc = net.serverResource(None, None) flatMap {
         case (isa, incoming) =>
           val handler = incoming flatMap { socket =>
             socket.reads.through(socket.writes)

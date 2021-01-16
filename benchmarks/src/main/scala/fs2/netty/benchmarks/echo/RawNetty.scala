@@ -17,7 +17,7 @@
 package fs2.netty.benchmarks.echo
 
 import io.netty.bootstrap.ServerBootstrap
-import io.netty.channel.{ChannelFuture, ChannelHandler, ChannelHandlerContext, ChannelInitializer, ChannelInboundHandlerAdapter, ChannelOption}
+import io.netty.channel.{ChannelFuture, ChannelHandlerContext, ChannelInitializer, ChannelInboundHandlerAdapter, ChannelOption}
 import io.netty.channel.nio.NioEventLoopGroup
 import io.netty.channel.socket.nio.NioServerSocketChannel
 import io.netty.channel.socket.SocketChannel
@@ -35,9 +35,6 @@ object RawNetty {
     val bootstrap = new ServerBootstrap
     bootstrap.group(parent, child)
       .option(ChannelOption.AUTO_READ.asInstanceOf[ChannelOption[Any]], false)
-      .option(ChannelOption.SO_REUSEADDR.asInstanceOf[ChannelOption[Any]], true)
-      .option(ChannelOption.SO_KEEPALIVE.asInstanceOf[ChannelOption[Any]], false)
-      .option(ChannelOption.TCP_NODELAY.asInstanceOf[ChannelOption[Any]], false)
       .channel(classOf[NioServerSocketChannel])
       .childHandler(new ChannelInitializer[SocketChannel] {
         def initChannel(ch: SocketChannel) = {

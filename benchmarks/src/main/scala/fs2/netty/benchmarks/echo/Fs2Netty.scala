@@ -21,15 +21,15 @@ package benchmarks.echo
 import cats.effect.{ExitCode, IO, IOApp}
 import cats.syntax.all._
 
-import java.net.InetSocketAddress
+import com.comcast.ip4s.{Host, Port}
 
 object Fs2Netty extends IOApp {
   def run(args: List[String]): IO[ExitCode] = {
-    val host = args(0)
-    val port = args(1).toInt
+    val host = Host(args(0))
+    val port = Port(args(1).toInt).get
 
     val rsrc = Network[IO] flatMap { net =>
-      val handlers = net.server(new InetSocketAddress(host, port)) map { client =>
+      val handlers = net.server(host, port) map { client =>
         client.reads.through(client.writes).attempt.void
       }
 
