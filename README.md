@@ -59,3 +59,18 @@ object EchoClient extends IOApp {
 ```
 
 The above implements a very simple echo server and client. The client connects to the server socket and wires up local stdin to send raw bytes to the server, writing response bytes from the server back to stdout. All resources are fully managed, and both processes are killed using <kbd>Ctrl</kbd>-<kbd>C</kbd>, which will cancel the respective streams and release all resource handles.
+
+## Performance
+
+All of this is super-duper preliminary, okay? But with very minimal optimizations, and on my laptop, the numbers roughly look like this.
+
+### Throughput
+
+A simple echo server, implemented relatively naively in each. The major difference is that the "raw Netty" implementation is doing things that are very unsafe in general (i.e. just passing the read buffer through to the write). You would lose a lot of that throughput if you had to actually use the data for anything other than echoing. So keeping in mind that the raw Netty implementation is effectively cheating, here you go:
+
+|              | Raw Netty   | fs2-netty  | fs2-io    |
+|--------------|-------------|------------|-----------|
+| **Absolute** | 17,060 Mbps | 9,999 Mbps | 2496 Mbps |
+| **Relative** | 1           | 0.59       | 0.15      |
+
+This was a 1 minute test, echoing `$` as fast as passible using `tcpkali`. The relative numbers are more meaningful than the absolute numbers.

@@ -17,8 +17,8 @@
 package fs2
 package netty
 
-import cats.Functor
-import cats.effect.{Async, Sync}
+import cats.{Applicative, ApplicativeError, Functor}
+import cats.effect.{Async, Poll, Sync}
 import cats.effect.std.{Dispatcher, Queue}
 import cats.syntax.all._
 
@@ -26,16 +26,23 @@ import io.netty.buffer.{ByteBuf, Unpooled}
 import io.netty.channel.{ChannelHandlerContext, ChannelInboundHandlerAdapter}
 import io.netty.channel.socket.SocketChannel
 
+import scala.annotation.tailrec
+
 import java.net.InetSocketAddress
+import java.util.concurrent.atomic.AtomicReference
 
 private final class SocketHandler[F[_]: Async](
     disp: Dispatcher[F],
-    channel: SocketChannel,
-    chunks: Queue[F, ByteBuf])
+    channel: SocketChannel)
     extends ChannelInboundHandlerAdapter
     with Socket[F] {
 
-  private[this] var ctx: ChannelHandlerContext = _
+  private[this] var buf: ByteBuf = _
+  private[this] var error: Throwable = _
+  private[this] val continue = new AtomicReference[Either[Throwable, Unit] => Unit]
+
+  private[this] val RightU = Right(())
+  private[this] val Signal: Either[Throwable, Unit] => Unit = _ => ()   // don't ask...
 
   val localAddress: F[InetSocketAddress] =
     Sync[F].delay(channel.localAddress())
@@ -43,18 +50,55 @@ private final class SocketHandler[F[_]: Async](
   val remoteAddress: F[InetSocketAddress] =
     Sync[F].delay(channel.remoteAddress())
 
-  val read: F[Chunk[Byte]] =
-    Sync[F].delay(channel.read()) *> chunks.take.map(toChunk)
+  // if this returns null it means termination
+  private[this] def take(poll: Poll[F]): F[ByteBuf] =
+    Sync[F] defer {
+      if (buf == null && error == null) {
+        val gate = poll {
+          Async[F].async_[Unit] { k =>
+            if (!continue.compareAndSet(null, k)) {
+              continue.set(null)    // it's the Signal now
+              k(RightU)
+            }
+          }
+        }
+
+        val read = Sync[F] defer {
+          if (error != null) {
+            val t = error
+            error = null
+            ApplicativeError[F, Throwable].raiseError(t)
+          } else {
+            val b = buf
+            buf = null
+            b.pure[F]
+          }
+        }
+
+        gate *> read
+      } else if (error != null) {
+        val t = error
+        error = null
+        ApplicativeError[F, Throwable].raiseError(t)
+      } else {
+        val b = buf
+        buf = null
+        b.pure[F]
+      }
+    }
 
   private[this] val fetch: Stream[F, ByteBuf] =
-    Stream.bracket(Sync[F].delay(channel.read()) *> chunks.take) { b =>
-      Sync[F].delay(b.release())
+    Stream.bracketFull[F, ByteBuf](poll => Sync[F].delay(channel.read()) *> take(poll)) { (b, _) =>
+      if (b != null)
+        Sync[F].delay(b.release())
+      else
+        Applicative[F].unit
     }
 
   lazy val reads: Stream[F, Byte] =
     Stream force {
       Functor[F].ifF(isOpen)(
-        fetch.flatMap(b => Stream.chunk(toChunk(b))) ++ reads,
+        fetch.flatMap(b => if (b == null) Stream.empty else Stream.chunk(toChunk(b))) ++ reads,
         Stream.empty)
     }
 
@@ -70,8 +114,23 @@ private final class SocketHandler[F[_]: Async](
   val close: F[Unit] =
     fromNettyFuture[F](Sync[F].delay(channel.close())).void
 
-  override def channelRead(ctx: ChannelHandlerContext, msg: AnyRef) =
-    disp.unsafeRunAndForget(chunks.offer(msg.asInstanceOf[ByteBuf]))
+  @tailrec
+  private[this] def fire(): Unit = {
+    if (continue.get() != null)
+      continue.getAndSet(null)(RightU)
+    else if (!continue.compareAndSet(null, Signal))
+      fire()
+  }
+
+  override def channelRead(ctx: ChannelHandlerContext, msg: AnyRef) = {
+    buf = msg.asInstanceOf[ByteBuf]
+    fire()
+  }
+
+  override def exceptionCaught(ctx: ChannelHandlerContext, t: Throwable) = {
+    error = t
+    fire()
+  }
 
   private[this] def toByteBuf(chunk: Chunk[Byte]): ByteBuf =
     chunk match {

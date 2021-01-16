@@ -131,10 +131,8 @@ final class Network[F[_]: Async] private (
         ch.config().setAutoRead(false)
 
         disp unsafeRunSync {
-          val handlerF = Queue.synchronous[F, ByteBuf].map(new SocketHandler[F](disp, ch, _))
-          handlerF flatMap { s =>
-            Sync[F].delay(p.addLast(s)) *> result(s)
-          }
+          val handlerF = Sync[F].delay(new SocketHandler[F](disp, ch))
+          handlerF.flatMap(s => Sync[F].delay(p.addLast(s)) *> result(s))
         }
       }
     }
