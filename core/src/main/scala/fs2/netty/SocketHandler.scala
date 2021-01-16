@@ -72,11 +72,8 @@ private final class SocketHandler[F[_]: Async] (
   val writes: Pipe[F, Byte, INothing] =
     _.chunks.evalMap(c => write(c) *> isOpen).takeWhile(b => b).drain
 
-  val isOpen: F[Boolean] =
+  private[this] val isOpen: F[Boolean] =
     Sync[F].delay(channel.isOpen())
-
-  val close: F[Unit] =
-    fromNettyFuture[F](Sync[F].delay(channel.close())).void
 
   override def channelRead(ctx: ChannelHandlerContext, msg: AnyRef) =
     disp.unsafeRunAndForget(bufs.offer(msg))

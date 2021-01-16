@@ -28,7 +28,4 @@ trait Socket[F[_]] {
 
   def write(bytes: Chunk[Byte]): F[Unit]
   def writes: Pipe[F, Byte, INothing]
-
-  def isOpen: F[Boolean]
-  def close: F[Unit]
 }
