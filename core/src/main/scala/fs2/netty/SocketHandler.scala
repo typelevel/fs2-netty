@@ -62,6 +62,11 @@ private final class SocketHandler[F[_]: Async](channel: SocketChannel)
 
         val read: F[ByteBuf] = Sync[F] defer {
           if (error != null) {
+            if (buf != null) {
+              buf.release()
+              buf = null
+            }
+
             val t = error
             error = null
             ApplicativeError[F, Throwable].raiseError(t)
@@ -74,6 +79,11 @@ private final class SocketHandler[F[_]: Async](channel: SocketChannel)
 
         gate *> read
       } else if (error != null) {
+        if (buf != null) {
+          buf.release()
+          buf = null
+        }
+
         val t = error
         error = null
         ApplicativeError[F, Throwable].raiseError(t)
