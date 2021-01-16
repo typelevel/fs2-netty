@@ -23,9 +23,9 @@ import cats.syntax.all._
 
 import io.netty.bootstrap.{Bootstrap, ServerBootstrap}
 import io.netty.channel.{Channel, ChannelInitializer, ChannelOption, EventLoopGroup, ServerChannel}
-import io.netty.channel.nio.NioEventLoopGroup
-import io.netty.channel.socket.nio.{NioServerSocketChannel, NioSocketChannel}
 import io.netty.channel.socket.SocketChannel
+
+import scala.util.Try
 
 import java.net.{InetAddress, InetSocketAddress}
 
@@ -139,10 +139,27 @@ final class Network[F[_]: Async] private (
 
 object Network {
 
-  // TODO detect niouring/epoll/kpoll
-  private[this] val EventLoopConstr = classOf[NioEventLoopGroup].getDeclaredConstructor(classOf[Int])
-  private[this] val ServerChannelClazz = classOf[NioServerSocketChannel]
-  private[this] val ClientChannelClazz = classOf[NioSocketChannel]
+  // TODO detect niouring/epoll
+  private[this] val EventLoopConstr = {
+    val clazz = Try(Class.forName("io.netty.channel.kqueue.KQueueEventLoopGroup")).orElse(
+      Try(Class.forName("io.netty.channel.nio.NioEventLoopGroup")))
+
+    clazz.get.getDeclaredConstructor(classOf[Int])
+  }
+
+  private[this] val ServerChannelClazz = {
+    val clazz = Try(Class.forName("io.netty.channel.kqueue.KQueueServerSocketChannel")).orElse(
+      Try(Class.forName("io.netty.channel.socket.nio.NioServerSocketChannel")))
+
+    clazz.get.asInstanceOf[Class[_ <: ServerChannel]]
+  }
+
+  private[this] val ClientChannelClazz = {
+    val clazz = Try(Class.forName("io.netty.channel.kqueue.KQueueSocketChannel")).orElse(
+      Try(Class.forName("io.netty.channel.socket.nio.NioSocketChannel")))
+
+    clazz.get.asInstanceOf[Class[_ <: Channel]]
+  }
 
   def apply[F[_]: Async]: Resource[F, Network[F]] = {
     // TODO configure threads
