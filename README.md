@@ -81,5 +81,5 @@ Tested using [rust_echo_bench](https://github.com/haraldh/rust_echo_bench).
 
 |              | Raw Netty   | fs2-netty  | fs2-io     |
 |--------------|-------------|------------|------------|
-| **Absolute** | 110,690 RPS | 37,028 RPS | 77,330 RPS |
-| **Relative** | 1           | 0.33       | 0.70       |
+| **Absolute** | 110,690 RPS | 38,673 RPS | 77,330 RPS |
+| **Relative** | 1           | 0.35       | 0.70       |

@@ -82,7 +82,7 @@ final class Network[F[_]: Async] private (
       : Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F]])] =
     Dispatcher[F] flatMap { disp =>
       Resource suspend {
-        Queue.synchronous[F, Socket[F]] flatMap { sockets =>
+        Queue.unbounded[F, Socket[F]] flatMap { sockets =>
           host.traverse(_.resolve[F]) flatMap { resolved =>
             Sync[F] delay {
               val bootstrap = new ServerBootstrap
