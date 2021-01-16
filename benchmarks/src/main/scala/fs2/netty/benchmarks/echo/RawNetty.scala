@@ -42,7 +42,7 @@ object RawNetty {
       .childHandler(new ChannelInitializer[SocketChannel] {
         def initChannel(ch: SocketChannel) = {
           ch.config().setAutoRead(false)
-          ch.pipeline().addLast(EchoHandler)
+          ch.pipeline().addLast(new EchoHandler)    // allocating is fair
           ch.parent().read()
           ()
         }
@@ -55,8 +55,7 @@ object RawNetty {
     ()
   }
 
-  @ChannelHandler.Sharable
-  object EchoHandler extends ChannelInboundHandlerAdapter {
+  final class EchoHandler extends ChannelInboundHandlerAdapter {
 
     override def channelActive(ctx: ChannelHandlerContext) = {
       ctx.channel.read()
@@ -72,5 +71,7 @@ object RawNetty {
 
       ()
     }
+
+    override def exceptionCaught(ctx: ChannelHandlerContext, t: Throwable) = ()
   }
 }
