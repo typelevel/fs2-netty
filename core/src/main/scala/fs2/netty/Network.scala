@@ -185,7 +185,7 @@ object Network {
         meth.invoke(server, new Integer(90))    // TODO tweak this a bit more; 100 was worse than 50 and 90 was a dramatic step up from both
         meth.invoke(client, new Integer(90))
       } catch {
-        case e: Exception => ()
+        case _: Exception => ()
       }
 
       new Network[F](server, client, ClientChannelClazz, ServerChannelClazz)
