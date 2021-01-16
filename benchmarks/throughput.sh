@@ -8,4 +8,9 @@ IFS=$'\n\t'        # http://redsymbol.net/articles/unofficial-bash-strict-mode/
 host=$1
 port=$2
 
-exec tcpkali -T 1m -m '$' $host:$port
+exec tcpkali \
+  -m xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+  --connect-rate=200 \
+  -c 500 \
+  -T 30s \
+  $host:$port

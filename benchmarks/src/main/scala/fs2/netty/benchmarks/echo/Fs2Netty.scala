@@ -19,6 +19,7 @@ package netty
 package benchmarks.echo
 
 import cats.effect.{ExitCode, IO, IOApp}
+import cats.syntax.all._
 
 import java.net.InetSocketAddress
 
@@ -29,7 +30,7 @@ object Fs2Netty extends IOApp {
 
     val rsrc = Network[IO] flatMap { net =>
       val handlers = net.server(new InetSocketAddress(host, port)) map { client =>
-        client.reads.through(client.writes)
+        client.reads.through(client.writes).handleError(_ => ())
       }
 
       handlers.parJoinUnbounded.compile.resource.drain
