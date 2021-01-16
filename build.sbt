@@ -27,6 +27,8 @@ ThisBuild / startYear := Some(2021)
 
 ThisBuild / crossScalaVersions := Seq("2.12.12", "2.13.4", "3.0.0-M3")
 
+ThisBuild / githubWorkflowOSes += "macos-latest"
+
 val Fs2Version = "3.0-57-3fb340a"
 
 lazy val root = project.in(file("."))
