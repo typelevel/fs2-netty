@@ -30,6 +30,8 @@ import io.netty.channel.socket.SocketChannel
 import scala.util.Try
 
 import java.net.InetSocketAddress
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.atomic.AtomicInteger
 
 final class Network[F[_]: Async] private (
     parent: EventLoopGroup,
@@ -137,7 +139,7 @@ object Network {
     val clazz = Try(Class.forName("io.netty.channel.kqueue.KQueueEventLoopGroup")).orElse(
       Try(Class.forName("io.netty.channel.nio.NioEventLoopGroup")))
 
-    clazz.get.getDeclaredConstructor(classOf[Int])
+    clazz.get.getDeclaredConstructor(classOf[Int], classOf[ThreadFactory])
   }
 
   private[this] val ServerChannelClazz = {
@@ -156,13 +158,26 @@ object Network {
 
   def apply[F[_]: Async]: Resource[F, Network[F]] = {
     // TODO configure threads
-    val instantiate = Sync[F] delay {
-      val result = EventLoopConstr.newInstance(new Integer(1))
+    def instantiate(name: String) = Sync[F] delay {
+      val result = EventLoopConstr.newInstance(new Integer(1), new ThreadFactory {
+        private val ctr = new AtomicInteger(0)
+        def newThread(r: Runnable): Thread = {
+          val t = new Thread(r)
+          t.setDaemon(true)
+          t.setName(s"fs2-netty-$name-io-worker-${ctr.getAndIncrement()}")
+          t.setPriority(Thread.MAX_PRIORITY)
+          t
+        }
+      })
+
       result.asInstanceOf[EventLoopGroup]
     }
 
-    val instantiateR = Resource.make(instantiate)(elg => fromNettyFuture[F](Sync[F].delay(elg.shutdownGracefully())).void)
+    def instantiateR(name: String) =
+      Resource.make(instantiate(name)) { elg =>
+        fromNettyFuture[F](Sync[F].delay(elg.shutdownGracefully())).void
+      }
 
-    (instantiateR, instantiateR).mapN(new Network[F](_, _, ClientChannelClazz, ServerChannelClazz))
+    (instantiateR("server"), instantiateR("client")).mapN(new Network[F](_, _, ClientChannelClazz, ServerChannelClazz))
   }
 }
