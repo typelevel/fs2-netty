@@ -129,9 +129,10 @@ final class Network[F[_]: Async] private (
         val p = ch.pipeline()
         ch.config().setAutoRead(false)
 
-        disp unsafeRunSync {
-          val handlerF = Sync[F].delay(new SocketHandler[F](ch))
-          handlerF.flatMap(s => Sync[F].delay(p.addLast(s)) *> result(s))
+        disp unsafeRunAndForget {
+          SocketHandler[F](disp, ch) flatMap { s =>
+            Sync[F].delay(p.addLast(s)) *> result(s)
+          }
         }
       }
     }

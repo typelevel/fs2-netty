@@ -68,10 +68,10 @@ All of this is super-duper preliminary, okay? But with very minimal optimization
 
 A simple echo server, implemented relatively naively in each. The major difference is that the "raw Netty" implementation is doing things that are very unsafe in general (i.e. just passing the read buffer through to the write). You would lose a lot of that throughput if you had to actually use the data for anything other than echoing. So keeping in mind that the raw Netty implementation is effectively cheating, here you go:
 
-|              | Raw Netty   | fs2-netty  | fs2-io     |
-|--------------|-------------|------------|------------|
-| **Absolute** | 13,261 Mbps | 9,689 Mbps | 7,364 Mbps |
-| **Relative** | 1           | 0.73       | 0.55       |
+|              | Raw Netty   | fs2-netty   | fs2-io     |
+|--------------|-------------|-------------|------------|
+| **Absolute** | 13,261 Mbps | 11,205 Mbps | 7,364 Mbps |
+| **Relative** | 1           | 0.85        | 0.55       |
 
 This was a 30 second test, echoing a long string of `x`s as fast as passible using `tcpkali`. 200 connections per second were established, up to a throttle of 500 concurrents. The relative numbers are more meaningful than the absolute numbers.
 
@@ -81,5 +81,5 @@ Tested using [rust_echo_bench](https://github.com/haraldh/rust_echo_bench).
 
 |              | Raw Netty   | fs2-netty  | fs2-io     |
 |--------------|-------------|------------|------------|
-| **Absolute** | 111,163 RPS | 41,608 RPS | 77,330 RPS |
-| **Relative** | 1           | 0.37       | 0.70       |
+| **Absolute** | 111,163 RPS | 36,748 RPS | 77,330 RPS |
+| **Relative** | 1           | 0.33       | 0.70       |

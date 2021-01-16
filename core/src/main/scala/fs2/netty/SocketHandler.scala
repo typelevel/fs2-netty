@@ -19,6 +19,7 @@ package netty
 
 import cats.{Applicative, ApplicativeError, Functor}
 import cats.effect.{Async, Poll, Sync}
+import cats.effect.std.{Dispatcher, Queue}
 import cats.syntax.all._
 
 import io.netty.buffer.{ByteBuf, Unpooled}
@@ -30,16 +31,12 @@ import scala.annotation.tailrec
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicReference
 
-private final class SocketHandler[F[_]: Async](channel: SocketChannel)
+private final class SocketHandler[F[_]: Async] (
+    disp: Dispatcher[F],
+    channel: SocketChannel,
+    bufs: Queue[F, AnyRef])     // ByteBuf | Throwable | Null
     extends ChannelInboundHandlerAdapter
     with Socket[F] {
-
-  private[this] var buf: ByteBuf = _
-  private[this] var error: Throwable = _
-  private[this] val continue = new AtomicReference[Either[Throwable, Unit] => Unit]
-
-  private[this] val RightU = Right(())
-  private[this] val Signal: Either[Throwable, Unit] => Unit = _ => ()   // don't ask...
 
   val localAddress: F[InetSocketAddress] =
     Sync[F].delay(channel.localAddress())
@@ -47,51 +44,11 @@ private final class SocketHandler[F[_]: Async](channel: SocketChannel)
   val remoteAddress: F[InetSocketAddress] =
     Sync[F].delay(channel.remoteAddress())
 
-  // if this returns null it means termination
   private[this] def take(poll: Poll[F]): F[ByteBuf] =
-    Sync[F] defer {
-      if (buf == null && error == null) {
-        val gate = poll {
-          Async[F].async_[Unit] { k =>
-            if (!continue.compareAndSet(null, k)) {
-              continue.set(null)    // it's the Signal now
-              k(RightU)
-            }
-          }
-        }
-
-        val read: F[ByteBuf] = Sync[F] defer {
-          if (error != null) {
-            if (buf != null) {
-              buf.release()
-              buf = null
-            }
-
-            val t = error
-            error = null
-            ApplicativeError[F, Throwable].raiseError(t)
-          } else {
-            val b = buf
-            buf = null
-            b.pure[F]
-          }
-        }
-
-        gate *> read
-      } else if (error != null) {
-        if (buf != null) {
-          buf.release()
-          buf = null
-        }
-
-        val t = error
-        error = null
-        ApplicativeError[F, Throwable].raiseError(t)
-      } else {
-        val b = buf
-        buf = null
-        b.pure[F]
-      }
+    poll(bufs.take) flatMap {
+      case null => Applicative[F].pure(null)   // EOF marker
+      case buf: ByteBuf => buf.pure[F]
+      case t: Throwable => t.raiseError[F, ByteBuf]
     }
 
   private[this] val fetch: Stream[F, ByteBuf] =
@@ -121,23 +78,18 @@ private final class SocketHandler[F[_]: Async](channel: SocketChannel)
   val close: F[Unit] =
     fromNettyFuture[F](Sync[F].delay(channel.close())).void
 
-  @tailrec
-  private[this] def fire(): Unit = {
-    if (continue.get() != null)
-      continue.getAndSet(null)(RightU)
-    else if (!continue.compareAndSet(null, Signal))
-      fire()
-  }
+  override def channelRead(ctx: ChannelHandlerContext, msg: AnyRef) =
+    disp.unsafeRunAndForget(bufs.offer(msg))
 
-  override def channelRead(ctx: ChannelHandlerContext, msg: AnyRef) = {
-    buf = msg.asInstanceOf[ByteBuf]
-    fire()
-  }
+  override def exceptionCaught(ctx: ChannelHandlerContext, t: Throwable) =
+    disp.unsafeRunAndForget(bufs.offer(t))
 
-  override def exceptionCaught(ctx: ChannelHandlerContext, t: Throwable) = {
-    error = t
-    fire()
-  }
+  override def channelInactive(ctx: ChannelHandlerContext) =
+    try {
+      disp.unsafeRunAndForget(bufs.offer(null))
+    } catch {
+      case _: IllegalStateException => ()   // sometimes we can see this due to race conditions in shutdown
+    }
 
   private[this] def toByteBuf(chunk: Chunk[Byte]): ByteBuf =
     chunk match {
@@ -158,4 +110,11 @@ private final class SocketHandler[F[_]: Async](channel: SocketChannel)
       Chunk.byteBuffer(buf.nioBuffer())
     else
       ???
+}
+
+object SocketHandler {
+  def apply[F[_]: Async](disp: Dispatcher[F], channel: SocketChannel): F[SocketHandler[F]] =
+    Queue.unbounded[F, AnyRef] map { bufs =>
+      new SocketHandler(disp, channel, bufs)
+    }
 }
