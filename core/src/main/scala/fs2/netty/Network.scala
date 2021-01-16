@@ -135,11 +135,11 @@ final class Network[F[_]: Async] private (
 object Network {
 
   // TODO detect niouring/epoll
-  private[this] val EventLoopConstr = {
+  private[this] val EventLoopClazz = {
     val clazz = Try(Class.forName("io.netty.channel.kqueue.KQueueEventLoopGroup")).orElse(
       Try(Class.forName("io.netty.channel.nio.NioEventLoopGroup")))
 
-    clazz.get.getDeclaredConstructor(classOf[Int], classOf[ThreadFactory])
+    clazz.get
   }
 
   private[this] val ServerChannelClazz = {
@@ -159,7 +159,8 @@ object Network {
   def apply[F[_]: Async]: Resource[F, Network[F]] = {
     // TODO configure threads
     def instantiate(name: String) = Sync[F] delay {
-      val result = EventLoopConstr.newInstance(new Integer(1), new ThreadFactory {
+      val constr = EventLoopClazz.getDeclaredConstructor(classOf[Int], classOf[ThreadFactory])
+      val result = constr.newInstance(new Integer(1), new ThreadFactory {
         private val ctr = new AtomicInteger(0)
         def newThread(r: Runnable): Thread = {
           val t = new Thread(r)
@@ -178,6 +179,16 @@ object Network {
         fromNettyFuture[F](Sync[F].delay(elg.shutdownGracefully())).void
       }
 
-    (instantiateR("server"), instantiateR("client")).mapN(new Network[F](_, _, ClientChannelClazz, ServerChannelClazz))
+    (instantiateR("server"), instantiateR("client")) mapN { (server, client) =>
+      try {
+        val meth = EventLoopClazz.getDeclaredMethod("setIoRatio", classOf[Int])
+        meth.invoke(server, new Integer(90))    // TODO tweak this a bit more; 100 was worse than 50 and 90 was a dramatic step up from both
+        meth.invoke(client, new Integer(90))
+      } catch {
+        case e: Exception => ()
+      }
+
+      new Network[F](server, client, ClientChannelClazz, ServerChannelClazz)
+    }
   }
 }

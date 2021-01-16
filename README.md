@@ -70,8 +70,8 @@ A simple echo server, implemented relatively naively in each. The major differen
 
 |              | Raw Netty   | fs2-netty   | fs2-io     |
 |--------------|-------------|-------------|------------|
-| **Absolute** | 12,526 Mbps | 11,205 Mbps | 7,364 Mbps |
-| **Relative** | 1           | 0.89        | 0.59       |
+| **Absolute** | 12,526 Mbps | 13,045 Mbps | 7,364 Mbps |
+| **Relative** | 1           | 1.04        | 0.59       |
 
 This was a 30 second test, echoing a long string of `x`s as fast as passible using `tcpkali`. 200 connections per second were established, up to a throttle of 500 concurrents. The relative numbers are more meaningful than the absolute numbers.
 
@@ -81,5 +81,5 @@ Tested using [rust_echo_bench](https://github.com/haraldh/rust_echo_bench).
 
 |              | Raw Netty   | fs2-netty  | fs2-io     |
 |--------------|-------------|------------|------------|
-| **Absolute** | 110,690 RPS | 36,748 RPS | 77,330 RPS |
+| **Absolute** | 110,690 RPS | 37,028 RPS | 77,330 RPS |
 | **Relative** | 1           | 0.33       | 0.70       |
