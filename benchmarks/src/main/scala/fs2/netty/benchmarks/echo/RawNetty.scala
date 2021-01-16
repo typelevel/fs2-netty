@@ -19,7 +19,7 @@ package fs2.netty.benchmarks.echo
 import io.netty.bootstrap.ServerBootstrap
 import io.netty.channel.{ChannelFuture, ChannelHandler, ChannelHandlerContext, ChannelInitializer, ChannelInboundHandlerAdapter, ChannelOption}
 import io.netty.channel.nio.NioEventLoopGroup
-import io.netty.channel.socket.nio.{NioServerSocketChannel, NioSocketChannel}
+import io.netty.channel.socket.nio.NioServerSocketChannel
 import io.netty.channel.socket.SocketChannel
 
 import java.net.InetSocketAddress
@@ -44,6 +44,7 @@ object RawNetty {
           ch.config().setAutoRead(false)
           ch.pipeline().addLast(EchoHandler)
           ch.parent().read()
+          ()
         }
       })
 
@@ -51,18 +52,25 @@ object RawNetty {
     cf.sync()
     cf.channel.read()
     cf.channel().closeFuture().sync()
+    ()
   }
 
   @ChannelHandler.Sharable
   object EchoHandler extends ChannelInboundHandlerAdapter {
 
-    override def channelActive(ctx: ChannelHandlerContext) =
+    override def channelActive(ctx: ChannelHandlerContext) = {
       ctx.channel.read()
+      ()
+    }
 
     override def channelRead(ctx: ChannelHandlerContext, msg: AnyRef) = {
       ctx.channel.writeAndFlush(msg) addListener { (_: ChannelFuture) =>
         ctx.channel.read()
+
+        ()
       }
+
+      ()
     }
   }
 }

@@ -22,7 +22,6 @@ import cats.effect.std.{Dispatcher, Queue}
 import cats.syntax.all._
 
 import io.netty.bootstrap.{Bootstrap, ServerBootstrap}
-import io.netty.buffer.ByteBuf
 import io.netty.channel.{Channel, ChannelInitializer, ChannelOption, EventLoopGroup, ServerChannel}
 import io.netty.channel.nio.NioEventLoopGroup
 import io.netty.channel.socket.nio.{NioServerSocketChannel, NioSocketChannel}
@@ -131,7 +130,7 @@ final class Network[F[_]: Async] private (
         ch.config().setAutoRead(false)
 
         disp unsafeRunSync {
-          val handlerF = Sync[F].delay(new SocketHandler[F](disp, ch))
+          val handlerF = Sync[F].delay(new SocketHandler[F](ch))
           handlerF.flatMap(s => Sync[F].delay(p.addLast(s)) *> result(s))
         }
       }

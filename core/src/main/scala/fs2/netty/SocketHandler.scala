@@ -19,7 +19,6 @@ package netty
 
 import cats.{Applicative, ApplicativeError, Functor}
 import cats.effect.{Async, Poll, Sync}
-import cats.effect.std.{Dispatcher, Queue}
 import cats.syntax.all._
 
 import io.netty.buffer.{ByteBuf, Unpooled}
@@ -31,9 +30,7 @@ import scala.annotation.tailrec
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicReference
 
-private final class SocketHandler[F[_]: Async](
-    disp: Dispatcher[F],
-    channel: SocketChannel)
+private final class SocketHandler[F[_]: Async](channel: SocketChannel)
     extends ChannelInboundHandlerAdapter
     with Socket[F] {
 
@@ -63,7 +60,7 @@ private final class SocketHandler[F[_]: Async](
           }
         }
 
-        val read = Sync[F] defer {
+        val read: F[ByteBuf] = Sync[F] defer {
           if (error != null) {
             val t = error
             error = null
@@ -90,7 +87,7 @@ private final class SocketHandler[F[_]: Async](
   private[this] val fetch: Stream[F, ByteBuf] =
     Stream.bracketFull[F, ByteBuf](poll => Sync[F].delay(channel.read()) *> take(poll)) { (b, _) =>
       if (b != null)
-        Sync[F].delay(b.release())
+        Sync[F].delay(b.release()).void
       else
         Applicative[F].unit
     }

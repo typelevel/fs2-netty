@@ -25,15 +25,13 @@ import com.comcast.ip4s.{Host, Port}
 
 import fs2.io.net.Network
 
-import java.net.InetSocketAddress
-
 object Fs2IO extends IOApp {
   def run(args: List[String]): IO[ExitCode] = {
     val host = args(0)
     val port = args(1).toInt
 
     val handlers = Network[IO].server(Host(host), Port(port)) map { client =>
-      client.reads(8096).through(client.writes).handleError(_ => ())
+      client.reads(8096).through(client.writes).attempt.void
     }
 
     handlers.parJoinUnbounded.compile.drain.as(ExitCode.Success)

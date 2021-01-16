@@ -30,7 +30,7 @@ object Fs2Netty extends IOApp {
 
     val rsrc = Network[IO] flatMap { net =>
       val handlers = net.server(new InetSocketAddress(host, port)) map { client =>
-        client.reads.through(client.writes).handleError(_ => ())
+        client.reads.through(client.writes).attempt.void
       }
 
       handlers.parJoinUnbounded.compile.resource.drain
