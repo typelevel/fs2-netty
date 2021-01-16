@@ -46,5 +46,6 @@ lazy val benchmarks = project.in(file("benchmarks"))
   .dependsOn(core)
   .settings(
     libraryDependencies += "co.fs2" %% "fs2-io" % Fs2Version,
+    // run / javaOptions += "-Dio.netty.leakDetection.level=paranoid",
     run / fork := true)
   .enablePlugins(NoPublishPlugin)

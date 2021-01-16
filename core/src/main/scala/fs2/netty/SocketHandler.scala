@@ -35,6 +35,8 @@ private final class SocketHandler[F[_]: Async](
     extends ChannelInboundHandlerAdapter
     with Socket[F] {
 
+  private[this] var ctx: ChannelHandlerContext = _
+
   val localAddress: F[InetSocketAddress] =
     Sync[F].delay(channel.localAddress())
 
@@ -44,10 +46,15 @@ private final class SocketHandler[F[_]: Async](
   val read: F[Chunk[Byte]] =
     Sync[F].delay(channel.read()) *> chunks.take.map(toChunk)
 
+  private[this] val fetch: Stream[F, ByteBuf] =
+    Stream.bracket(Sync[F].delay(channel.read()) *> chunks.take) { b =>
+      Sync[F].delay(b.release())
+    }
+
   lazy val reads: Stream[F, Byte] =
     Stream force {
       Functor[F].ifF(isOpen)(
-        Stream.evalUnChunk(read) ++ reads,
+        fetch.flatMap(b => Stream.chunk(toChunk(b))) ++ reads,
         Stream.empty)
     }
 
