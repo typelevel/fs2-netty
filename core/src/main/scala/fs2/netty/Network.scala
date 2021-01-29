@@ -27,8 +27,6 @@ import io.netty.bootstrap.{Bootstrap, ServerBootstrap}
 import io.netty.channel.{Channel, ChannelInitializer, ChannelOption => JChannelOption, EventLoopGroup, ServerChannel}
 import io.netty.channel.socket.SocketChannel
 
-import scala.util.Try
-
 import java.net.InetSocketAddress
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicInteger
@@ -134,32 +132,16 @@ final class Network[F[_]: Async] private (
 
 object Network {
 
-  // TODO detect niouring/epoll
-  private[this] val EventLoopClazz = {
-    val clazz = Try(Class.forName("io.netty.channel.kqueue.KQueueEventLoopGroup")).orElse(
-      Try(Class.forName("io.netty.channel.nio.NioEventLoopGroup")))
+  private[this] val (eventLoopClazz, serverChannelClazz, clientChannelClazz) = {
+    val (e, s, c) = uring().orElse(epoll()).orElse(kqueue()).getOrElse(nio())
 
-    clazz.get
-  }
-
-  private[this] val ServerChannelClazz = {
-    val clazz = Try(Class.forName("io.netty.channel.kqueue.KQueueServerSocketChannel")).orElse(
-      Try(Class.forName("io.netty.channel.socket.nio.NioServerSocketChannel")))
-
-    clazz.get.asInstanceOf[Class[_ <: ServerChannel]]
-  }
-
-  private[this] val ClientChannelClazz = {
-    val clazz = Try(Class.forName("io.netty.channel.kqueue.KQueueSocketChannel")).orElse(
-      Try(Class.forName("io.netty.channel.socket.nio.NioSocketChannel")))
-
-    clazz.get.asInstanceOf[Class[_ <: Channel]]
+    (e, s.asInstanceOf[Class[_ <: ServerChannel]], c.asInstanceOf[Class[_ <: Channel]])
   }
 
   def apply[F[_]: Async]: Resource[F, Network[F]] = {
     // TODO configure threads
     def instantiate(name: String) = Sync[F] delay {
-      val constr = EventLoopClazz.getDeclaredConstructor(classOf[Int], classOf[ThreadFactory])
+      val constr = eventLoopClazz.getDeclaredConstructor(classOf[Int], classOf[ThreadFactory])
       val result = constr.newInstance(new Integer(1), new ThreadFactory {
         private val ctr = new AtomicInteger(0)
         def newThread(r: Runnable): Thread = {
@@ -181,14 +163,60 @@ object Network {
 
     (instantiateR("server"), instantiateR("client")) mapN { (server, client) =>
       try {
-        val meth = EventLoopClazz.getDeclaredMethod("setIoRatio", classOf[Int])
+        val meth = eventLoopClazz.getDeclaredMethod("setIoRatio", classOf[Int])
         meth.invoke(server, new Integer(90))    // TODO tweak this a bit more; 100 was worse than 50 and 90 was a dramatic step up from both
         meth.invoke(client, new Integer(90))
       } catch {
         case _: Exception => ()
       }
 
-      new Network[F](server, client, ClientChannelClazz, ServerChannelClazz)
+      new Network[F](server, client, clientChannelClazz, serverChannelClazz)
     }
   }
+
+  private[this] def uring() =
+    try {
+      if (sys.props.get("fs2.netty.use.io_uring").map(_.toBoolean).getOrElse(false)) {
+        Class.forName("io.netty.incubator.channel.uring.IOUringEventLoop")
+
+        Some((
+          Class.forName("io.netty.incubator.channel.uring.IOUringEventLoopGroup"),
+          Class.forName("io.netty.incubator.channel.uring.IOUringServerSocketChannel"),
+          Class.forName("io.netty.incubator.channel.uring.IOUringSocketChannel")))
+      } else {
+        None
+      }
+    } catch {
+      case _: Throwable => None
+    }
+
+  private[this] def epoll() =
+    try {
+      Class.forName("io.netty.channel.epoll.EpollEventLoop")
+
+      Some((
+        Class.forName("io.netty.channel.epoll.EpollEventLoopGroup"),
+        Class.forName("io.netty.channel.epoll.EpollServerSocketChannel"),
+        Class.forName("io.netty.channel.epoll.EpollSocketChannel")))
+    } catch {
+      case _: Throwable => None
+    }
+
+  private[this] def kqueue() =
+    try {
+      Class.forName("io.netty.channel.kqueue.KQueueEventLoop")
+
+      Some((
+        Class.forName("io.netty.channel.kqueue.KQueueEventLoopGroup"),
+        Class.forName("io.netty.channel.kqueue.KQueueServerSocketChannel"),
+        Class.forName("io.netty.channel.kqueue.KQueueSocketChannel")))
+    } catch {
+      case _: Throwable => None
+    }
+
+  private[this] def nio() =
+    (
+      Class.forName("io.netty.channel.nio.NioEventLoopGroup"),
+      Class.forName("io.netty.channel.socket.nio.NioServerSocketChannel"),
+      Class.forName("io.netty.channel.socket.nio.NioSocketChannel"))
 }
