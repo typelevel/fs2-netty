@@ -11,3 +11,6 @@ tags
 # Intellij
 .idea
 *.iml
+
+# Mac OS
+META-INF/
