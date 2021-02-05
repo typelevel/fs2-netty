@@ -7,3 +7,7 @@ target/
 tags
 
 /.bsp/
+
+# Intellij
+.idea
+*.iml
