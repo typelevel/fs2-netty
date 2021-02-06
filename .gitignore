@@ -7,3 +7,10 @@ target/
 tags
 
 /.bsp/
+
+# Intellij
+.idea
+*.iml
+
+# Mac OS
+META-INF/
