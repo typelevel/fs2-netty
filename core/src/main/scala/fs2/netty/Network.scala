@@ -85,7 +85,8 @@ final class Network[F[_]: Async] private (
             Sync[F] delay {
               val bootstrap = new ServerBootstrap
               bootstrap.group(parent, child)
-                .option(JChannelOption.AUTO_READ.asInstanceOf[JChannelOption[Any]], false)   // backpressure
+                // TODO: does netty override this? `ServerBootstrap.init` via `bind` override schedules a future to set to autoread to false
+                .option(JChannelOption.AUTO_READ.asInstanceOf[JChannelOption[Any]], false) // backpressure
                 .channel(serverChannelClazz)
                 .childHandler(initializer(disp)(sockets.offer))
 
@@ -163,8 +164,8 @@ object Network {
 
     (instantiateR("server"), instantiateR("client")) mapN { (server, client) =>
       try {
-        val meth = eventLoopClazz.getDeclaredMethod("setIoRatio", classOf[Int])
-        meth.invoke(server, new Integer(90))    // TODO tweak this a bit more; 100 was worse than 50 and 90 was a dramatic step up from both
+        val meth = eventLoopClazz.getDeclaredMethod("setIoRatio", classOf[Int]) // TODO: this method is set to be depcrecated in the future releases
+        meth.invoke(server, new Integer(90)) // TODO tweak this a bit more; 100 was worse than 50 and 90 was a dramatic step up from both
         meth.invoke(client, new Integer(90))
       } catch {
         case _: Exception => ()
@@ -174,6 +175,7 @@ object Network {
     }
   }
 
+  //TODO: Why not use the Netty methods 
   private[this] def uring() =
     try {
       if (sys.props.get("fs2.netty.use.io_uring").map(_.toBoolean).getOrElse(false)) {
