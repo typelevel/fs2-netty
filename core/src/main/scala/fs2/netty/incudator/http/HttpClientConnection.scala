@@ -1,14 +1,30 @@
+/*
+ * Copyright 2021 Typelevel
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package fs2.netty.incudator.http
 
 import cats.Applicative
 import cats.data.Kleisli
-import cats.effect.GenConcurrent
+import cats.effect.Sync
 import cats.syntax.all._
 import fs2.Stream
-import fs2.netty.incudator.TcpSocket
+import fs2.netty.Socket
 import fs2.netty.incudator.http.HttpClientConnection._
 import io.netty.buffer.Unpooled
-import io.netty.channel.ChannelHandlerContext
+import io.netty.channel.{ChannelHandlerContext, ChannelPipeline}
 import io.netty.handler.codec.TooLongFrameException
 import io.netty.handler.codec.http._
 import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler.HandshakeComplete
@@ -18,39 +34,37 @@ import io.netty.handler.codec.http.websocketx.{WebSocketFrame, WebSocketServerPr
 // U could be io.netty.handler.timeout.IdleStateEvent if we wanted to handle connection closure, but in this
 // context we want to close the channel anyway and just be notified why it was closed. However, we should likely
 // send HttpResponseStatus.REQUEST_TIMEOUT for cleaner close. So change U type and handle at FS2 layer.
-class HttpClientConnection[F[_]](
-  tcpServerConnection: TcpSocket[
+class HttpClientConnection[F[_]: Sync](
+  clientSocket: Socket[
     F,
     FullHttpRequest,
     FullHttpResponse,
     Nothing
   ]
-)(implicit genCon: GenConcurrent[F, Throwable]) {
-
-  // TODO: Why does `Sync[F].delay(...).flatMap(...)` & `Stream.flatMap(...)` have a method collision when `import cats.syntax.all._`
+) {
 
   def successfullyDecodedReads(
     httpRouter: Kleisli[F, FullHttpRequest, FullHttpResponse],
     webSocketRouter: Kleisli[F, FullHttpRequest, WebSocketResponse[F]]
   ): Stream[F, Unit] =
-    tcpServerConnection.reads
+    clientSocket.reads
       .evalMap { request =>
         if (request.decoderResult().isFailure)
           createResponseForDecodeError(request.decoderResult().cause())
-            .flatMap(tcpServerConnection.write)
+            .flatMap(clientSocket.write)
         else if (isWebSocketRequest(request))
           transitionToWebSocketsOrRespond(
             webSocketRouter,
             request
           )
         else
-          httpRouter(request).flatMap(tcpServerConnection.write)
+          httpRouter(request).flatMap(clientSocket.write)
       }
 
   private def createResponseForDecodeError(
     cause: Throwable
   ): F[DefaultFullHttpResponse] =
-    Applicative[F].pure {
+    Sync[F].delay {
       cause match {
         case ex: TooLongFrameException if isTooLongHeaderException(ex) =>
           val resp = new DefaultFullHttpResponse(
@@ -81,41 +95,26 @@ class HttpClientConnection[F[_]](
   private def transitionToWebSocketsOrRespond(
     webSocketRouter: Kleisli[F, FullHttpRequest, WebSocketResponse[F]],
     request: FullHttpRequest
-  ) =
+  ): F[Unit] =
     webSocketRouter(request).flatMap {
       case WebSocketResponse.SwitchToWebSocketProtocol(
             wsConfigs,
             cb
           ) =>
-        tcpServerConnection
-          .mutatePipeline[WebSocketFrame, WebSocketFrame, HandshakeComplete] {
-            pipeline =>
-              // TODO: FS2-Netty should re-add itself back as last handler, perhaps it 1st removes itself then re-adds.
-              //  We'll also remove this handler after handshake, so might be better to manually add
-              //  WebSocketServerProtocolHandshakeHandler and Utf8FrameValidator since almost none of the other logic from
-              //  WebSocketServerProtocolHandler will be needed. Maybe just the logic around close frame should be ported over.
-              val handler =
-                new WebSocketServerProtocolHandler(wsConfigs.toNetty) {
-                  /*
-                      Default `exceptionCaught` of `WebSocketServerProtocolHandler` returns a 400 w/o any headers like `Content-length`.
-                      Let higher layer handler this. Catch WebSocketHandshakeException
-                   */
-                  override def exceptionCaught(
-                    ctx: ChannelHandlerContext,
-                    cause: Throwable
-                  ): Unit = ctx.fireExceptionCaught(cause)
-                }
-              pipeline.addLast(handler)
-              handler.channelRead(pipeline.context(handler), request)
-          }
+        clientSocket
+          .mutatePipeline[WebSocketFrame, WebSocketFrame, HandshakeComplete](
+            installWebSocketHandlersAndContinueWebSocketUpgrade(
+              request,
+              wsConfigs
+            )
+          )
           .flatMap { connection =>
             connection.events
-              .find(_ => true) // only take 1st
+              .find(_ => true) // only take 1st event since Netty will only first once
               .evalTap(handshakeComplete =>
                 connection
-                  .mutatePipeline[WebSocketFrame, WebSocketFrame, Nothing](_ =>
-                    ()
-                  )
+                  // TODO: maybe like a covary method?
+                  .mutatePipeline[WebSocketFrame, WebSocketFrame, Nothing](_ => Applicative[F].unit)
                   .map(wsConn =>
                     cb(
                       (
@@ -134,21 +133,51 @@ class HttpClientConnection[F[_]](
           .void
 
       case WebSocketResponse.`3xx`(code, body, headers) =>
-        wsResponse(code, body, headers).flatMap(tcpServerConnection.write)
+        wsResponse(code, body, headers).flatMap(clientSocket.write)
 
       case WebSocketResponse.`4xx`(code, body, headers) =>
-        wsResponse(code, body, headers).flatMap(tcpServerConnection.write)
+        wsResponse(code, body, headers).flatMap(clientSocket.write)
 
       case WebSocketResponse.`5xx`(code, body, headers) =>
-        wsResponse(code, body, headers).flatMap(tcpServerConnection.write)
+        wsResponse(code, body, headers).flatMap(clientSocket.write)
     }
+
+  private def installWebSocketHandlersAndContinueWebSocketUpgrade(
+    request: FullHttpRequest,
+    wsConfigs: WebSocketConfig
+  )(pipeline: ChannelPipeline): F[Unit] =
+    for {
+      // TODO: FS2-Netty should re-add itself back as last handler, perhaps it 1st removes itself then re-adds.
+      //  We'll also remove this handler after handshake, so might be better to manually add
+      //  WebSocketServerProtocolHandshakeHandler and Utf8FrameValidator since almost none of the other logic from
+      //  WebSocketServerProtocolHandler will be needed. Maybe just the logic around close frame should be ported over.
+      handler <- Applicative[F].pure(
+        new WebSocketServerProtocolHandler(wsConfigs.toNetty) {
+
+          /*
+            Default `exceptionCaught` of `WebSocketServerProtocolHandler` returns a 400 w/o any headers like `Content-length`.
+            Let higher layer handler this. Catch WebSocketHandshakeException
+           */
+          override def exceptionCaught(
+            ctx: ChannelHandlerContext,
+            cause: Throwable
+          ): Unit = ctx.fireExceptionCaught(cause)
+        }
+      )
+
+      _ <- Sync[F].delay(pipeline.addLast(handler))
+
+      _ <- Sync[F].delay(
+        handler.channelRead(pipeline.context(handler), request)
+      )
+    } yield ()
 
   private def wsResponse(
     code: Int,
     body: Option[String],
     headers: HttpHeaders
   ): F[FullHttpResponse] =
-    Applicative[F].pure(
+    Sync[F].delay(
       new DefaultFullHttpResponse(
         HttpVersion.HTTP_1_1,
         HttpResponseStatus.valueOf(code),

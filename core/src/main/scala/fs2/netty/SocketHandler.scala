@@ -17,98 +17,122 @@
 package fs2
 package netty
 
-import cats.{Applicative, Functor}
-import cats.effect.{Async, Poll, Sync}
 import cats.effect.std.{Dispatcher, Queue}
+import cats.effect.{Async, Poll, Sync}
 import cats.syntax.all._
-
+import cats.{Applicative, Functor}
 import com.comcast.ip4s.{IpAddress, SocketAddress}
-
-import io.netty.buffer.{ByteBuf, Unpooled}
-import io.netty.channel.{ChannelHandlerContext, ChannelInboundHandlerAdapter}
 import io.netty.channel.socket.SocketChannel
+import io.netty.channel.{ChannelHandlerContext, ChannelInboundHandlerAdapter, ChannelPipeline}
+import io.netty.util.ReferenceCountUtil
 
-private final class SocketHandler[F[_]: Async] (
-    disp: Dispatcher[F],
-    channel: SocketChannel,
-    bufs: Queue[F, AnyRef])     // ByteBuf | Throwable | Null
-    extends ChannelInboundHandlerAdapter
-    with Socket[F] {
+private final class SocketHandler[F[_]: Async, I, O, E](
+  disp: Dispatcher[F],
+  channel: SocketChannel,
+  readsQueue: Queue[F, AnyRef], // I | Throwable | Null
+  eventsQueue: Queue[F, E]
+) extends ChannelInboundHandlerAdapter
+    with Socket[F, I, O, E] {
 
-  val localAddress: F[SocketAddress[IpAddress]] =
+  override val localAddress: F[SocketAddress[IpAddress]] =
     Sync[F].delay(SocketAddress.fromInetSocketAddress(channel.localAddress()))
 
-  val remoteAddress: F[SocketAddress[IpAddress]] =
+  override val remoteAddress: F[SocketAddress[IpAddress]] =
     Sync[F].delay(SocketAddress.fromInetSocketAddress(channel.remoteAddress()))
 
-  private[this] def take(poll: Poll[F]): F[ByteBuf] =
-    poll(bufs.take) flatMap {
-      case null => Applicative[F].pure(null)   // EOF marker
-      case buf: ByteBuf => buf.pure[F]
-      case t: Throwable => t.raiseError[F, ByteBuf]
+  private[this] def take(poll: Poll[F]): F[Option[I]] =
+    poll(readsQueue.take) flatMap {
+      case null => Applicative[F].pure(none[I]) // EOF marker
+      case i: I => Applicative[F].pure(i.some)
+      case t: Throwable => t.raiseError[F, Option[I]]
     }
 
-  private[this] val fetch: Stream[F, ByteBuf] =
-    Stream.bracketFull[F, ByteBuf](poll => Sync[F].delay(channel.read()) *> take(poll)) { (b, _) =>
-      if (b != null)
-        Sync[F].delay(b.release()).void
-      else
-        Applicative[F].unit
-    }
+  private[this] val fetch: Stream[F, I] =
+    Stream
+      .bracketFull[F, Option[I]](poll =>
+        Sync[F].delay(channel.read()) *> take(poll)
+      ) { (i, _) =>
+        if (i != null)
+          Sync[F].delay(ReferenceCountUtil.safeRelease(i)).void
+        else
+          Applicative[F].unit
+      }
+      .unNoneTerminate
 
-  lazy val reads: Stream[F, Byte] =
+  override lazy val reads: Stream[F, I] =
     Stream force {
       Functor[F].ifF(isOpen)(
-        fetch.flatMap(b => if (b == null) Stream.empty else Stream.chunk(toChunk(b))) ++ reads,
-        Stream.empty)
+        fetch.flatMap(i =>
+          if (i == null) Stream.empty else Stream.emit(i)
+        ) ++ reads,
+        Stream.empty
+      )
     }
 
-  def write(bytes: Chunk[Byte]): F[Unit] =
-    fromNettyFuture[F](Sync[F].delay(channel.writeAndFlush(toByteBuf(bytes)))).void
+  override def write(output: O): F[Unit] =
+    fromNettyFuture[F](
+      Sync[F].delay(channel.writeAndFlush(output))
+    ).void
 
-  val writes: Pipe[F, Byte, INothing] =
-    _.chunks.evalMap(c => write(c) *> isOpen).takeWhile(b => b).drain
+  override val writes: Pipe[F, O, INothing] =
+    _.evalMap(o => write(o) *> isOpen).takeWhile(bool => bool).drain
 
   private[this] val isOpen: F[Boolean] =
-    Sync[F].delay(channel.isOpen())
+    Sync[F].delay(channel.isOpen)
 
   override def channelRead(ctx: ChannelHandlerContext, msg: AnyRef) =
-    disp.unsafeRunAndForget(bufs.offer(msg))
+    ReferenceCountUtil.touch(
+      msg,
+      s"Last touch point in FS2-Netty for ${msg.getClass.getSimpleName}"
+    ) match {
+      case i: I =>
+        disp.unsafeRunAndForget(readsQueue.offer(i))
+
+      case _ =>
+        ReferenceCountUtil.safeRelease(
+          msg
+        ) // TODO: Netty logs if release fails, but perhaps we want to catch error and do custom logging/reporting/handling
+    }
 
   override def exceptionCaught(ctx: ChannelHandlerContext, t: Throwable) =
-    disp.unsafeRunAndForget(bufs.offer(t))
+    disp.unsafeRunAndForget(readsQueue.offer(t))
 
   override def channelInactive(ctx: ChannelHandlerContext) =
     try {
-      disp.unsafeRunAndForget(bufs.offer(null))
+      disp.unsafeRunAndForget(readsQueue.offer(null))
     } catch {
-      case _: IllegalStateException => ()   // sometimes we can see this due to race conditions in shutdown
+      case _: IllegalStateException =>
+        () // sometimes we can see this due to race conditions in shutdown
     }
 
-  private[this] def toByteBuf(chunk: Chunk[Byte]): ByteBuf =
-    chunk match {
-      case Chunk.ArraySlice(arr, off, len) =>
-        Unpooled.wrappedBuffer(arr, off, len)
-
-      case c: Chunk.ByteBuffer =>
-        Unpooled.wrappedBuffer(c.toByteBuffer)
-
-      case c =>
-        Unpooled.wrappedBuffer(c.toArray)
+  override def userEventTriggered(ctx: ChannelHandlerContext, evt: Any): Unit =
+    evt match {
+      case e: E => disp.unsafeRunAndForget(eventsQueue.offer(e))
+      case _ => () // TODO: probably raise error on stream...
     }
 
-  private[this] def toChunk(buf: ByteBuf): Chunk[Byte] =
-    if (buf.hasArray())
-      Chunk.array(buf.array())
-    else if (buf.nioBufferCount() > 0)
-      Chunk.byteBuffer(buf.nioBuffer())
-    else
-      ???
+  override lazy val events: Stream[F, E] =
+    Stream.fromQueueUnterminated(eventsQueue)
+
+  override def mutatePipeline[I2, O2, E2](
+    mutator: ChannelPipeline => F[Unit]
+  ): F[Socket[F, I2, O2, E2]] =
+    Sync[F]
+      .suspend(Sync.Type.Delay)(mutator(channel.pipeline()))
+      .flatMap(_ => SocketHandler[F, I2, O2, E2](disp, channel))
+      .map(
+        identity
+      ) // TODO: why cannot compiler infer TcpSocketHandler in flatMap?
 }
 
 private object SocketHandler {
-  def apply[F[_]: Async](disp: Dispatcher[F], channel: SocketChannel): F[SocketHandler[F]] =
-    Queue.unbounded[F, AnyRef] map { bufs =>
-      new SocketHandler(disp, channel, bufs)
-    }
+
+  def apply[F[_]: Async, I, O, E](
+    disp: Dispatcher[F],
+    channel: SocketChannel
+  ): F[SocketHandler[F, I, O, E]] =
+    for {
+      readsQueue <- Queue.unbounded[F, AnyRef]
+      eventsQueue <- Queue.unbounded[F, E]
+    } yield new SocketHandler(disp, channel, readsQueue, eventsQueue)
 }

@@ -18,14 +18,21 @@ package fs2
 package netty
 
 import com.comcast.ip4s.{IpAddress, SocketAddress}
+import io.netty.channel.ChannelPipeline
 
-trait Socket[F[_]] {
+trait Socket[F[_], I, O, E] {
 
   def localAddress: F[SocketAddress[IpAddress]]
   def remoteAddress: F[SocketAddress[IpAddress]]
 
-  def reads: Stream[F, Byte]
+  def reads: Stream[F, I]
 
-  def write(bytes: Chunk[Byte]): F[Unit]
-  def writes: Pipe[F, Byte, INothing]
+  def events: Stream[F, E]
+
+  def write(output: O): F[Unit]
+  def writes: Pipe[F, O, INothing]
+
+  def mutatePipeline[I2, O2, E2](
+    mutator: ChannelPipeline => F[Unit]
+  ): F[Socket[F, I2, O2, E2]]
 }

@@ -1,45 +1,63 @@
+/*
+ * Copyright 2021 Typelevel
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package fs2.netty.incudator.http
 
-import cats.effect.kernel.Async
-import cats.effect.{GenConcurrent, Resource}
+import cats.data.NonEmptyList
+import cats.effect.{Async, Resource}
 import fs2.Stream
-import fs2.netty.incudator.TcpNetwork
-import io.netty.channel.{ChannelDuplexHandler, ChannelHandlerContext, ChannelPromise}
+import fs2.netty.Network
 import io.netty.handler.codec.http._
 import io.netty.handler.timeout.ReadTimeoutHandler
-import io.netty.util.ReferenceCountUtil
 
 import scala.concurrent.duration.FiniteDuration
 
 object HttpServer {
 
-  def start[F[_]: Async](httpConfigs: HttpConfigs)(implicit
-    genCon: GenConcurrent[F, Throwable]
+  def start[F[_]: Async](
+    httpConfigs: HttpConfigs
   ): Resource[F, Stream[F, HttpClientConnection[F]]] =
-    TcpNetwork()
-      .server[FullHttpRequest, FullHttpResponse, Nothing](
-        host = None,
-        port = None,
-        options = Nil,
-        handlers = List(
-          new HttpServerCodec(
-            httpConfigs.parsing.maxInitialLineLength,
-            httpConfigs.parsing.maxHeaderSize,
-            httpConfigs.parsing.maxChunkSize
+    for {
+      network <- Network[F]
+
+      rawHttpClientConnection <- network
+        .serverResource[FullHttpRequest, FullHttpResponse, Nothing](
+          host = None,
+          port = None,
+          handlers = NonEmptyList.of(
+            new HttpServerCodec(
+              httpConfigs.parsing.maxInitialLineLength,
+              httpConfigs.parsing.maxHeaderSize,
+              httpConfigs.parsing.maxChunkSize
+            ),
+            new HttpServerKeepAliveHandler,
+            new HttpObjectAggregator(
+              httpConfigs.parsing.maxHttpContentLength
+            ),
+            new ReadTimeoutHandler( // TODO: this also closes channel when exception is fired, should HttpClientConnection just handle that Idle Events?
+              httpConfigs.requestTimeoutPeriod.length,
+              httpConfigs.requestTimeoutPeriod.unit
+            )
+            // new HttpPipeliningBlockerHandler
           ),
-          new HttpServerKeepAliveHandler,
-          new HttpObjectAggregator(
-            httpConfigs.parsing.maxHttpContentLength
-          ),
-          new ReadTimeoutHandler( // TODO: this also closes channel when exception is fired, should HttpClientConnection just handle that Idle Events?
-            httpConfigs.requestTimeoutPeriod.length,
-            httpConfigs.requestTimeoutPeriod.unit
-          )
-          // new HttpPipeliningBlockerHandler
+          options = Nil
         )
-      )
-      .map(_._2)
-      .map(_.map(new HttpClientConnection[F](_)))
+        .map(_._2)
+
+    } yield rawHttpClientConnection.map(new HttpClientConnection[F](_))
 
   /**
     * @param requestTimeoutPeriod - limit on how long connection can remain open w/o any requests
