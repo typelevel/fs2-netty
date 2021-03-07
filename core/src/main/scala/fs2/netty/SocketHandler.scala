@@ -107,6 +107,7 @@ private final class SocketHandler[F[_]: Async, I, O, +E](
       case Right(i) =>
         // TODO: what's the perf impact of unsafeRunSync vs unsafeRunAndForget?
         //  FlowControlHandler & unsafeRunAndForget vs. unsafeRunSync-only?
+        //  Review for other Netty methods as well.
         disp.unsafeRunSync(readsQueue.offer(i.asRight[Exception].some))
     }
   }

@@ -174,6 +174,29 @@ class NettyPipelineSpec
           _ <- socket.isClosed.flatMap(isClosed => IO(isClosed should beTrue))
         } yield ok
     }
+
+    "exceptions in Netty pipeline raises an exception on the reads stream" in withResource {
+      dispatcher =>
+        for {
+          pipeline <- NettyPipeline[IO](dispatcher)
+          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](pipeline)
+          (channel, socket) = x
+
+          _ <- IO(
+            channel.underlying
+              .pipeline()
+              .fireExceptionCaught(new Throwable("unit test error"))
+          )
+
+          errMsg <- socket.reads
+            .map(_ => "")
+            .handleErrorWith(t => Stream.emit(t.getMessage))
+            .compile
+            .last
+        } yield errMsg shouldEqual "unit test error".some
+    }
+
+    // test reads, writes, events, and exceptions in combination to ensure order of events makes sense
   }
 
 //  "byte to byte pipeline" should {}
