@@ -74,7 +74,7 @@ final class Network[F[_]: Async] private (
       : Stream[F, Socket[F, Byte, Byte, Nothing]] =
     Stream.resource(serverResource(host, Some(port), options)).flatMap(_._2)
 
-  def server[I, O, E](
+  def server[I: Socket.Decoder, O, E](
       host: Option[Host],
       port: Port,
       handlers: NonEmptyList[ChannelHandler],
@@ -89,7 +89,7 @@ final class Network[F[_]: Async] private (
       : Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, Byte, Byte, Nothing]])] =
     serverResource(host, port, handlers = Nil,options)
 
-  def serverResource[I, O, E](
+  def serverResource[I: Socket.Decoder, O, E](
     host: Option[Host],
     port: Option[Port],
     handlers: NonEmptyList[ChannelHandler],
@@ -97,7 +97,7 @@ final class Network[F[_]: Async] private (
   ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, I, O, E]])] =
     serverResource(host, port, handlers.toList, options)
 
-  private def serverResource[I, O, E](
+  private def serverResource[I: Socket.Decoder, O, E](
     host: Option[Host],
     port: Option[Port],
     handlers: List[ChannelHandler],
@@ -173,6 +173,11 @@ final class Network[F[_]: Async] private (
           }
       }
     } yield res
+
+
+  implicit val decoder: Socket.Decoder[Byte] =  new Socket.Decoder[Byte] {
+    override def decode(x: AnyRef): Either[String, Byte] = ???
+  }
 
   private[this] def initializer(
       disp: Dispatcher[F])(

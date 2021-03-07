@@ -16,19 +16,23 @@
 
 package fs2.netty.incudator.http
 
-import com.comcast.ip4s.{IpAddress, SocketAddress}
 import fs2.netty.Socket
 import fs2.{INothing, Pipe, Stream}
 import io.netty.channel.ChannelPipeline
 import io.netty.handler.codec.http.websocketx.WebSocketFrame
 
 class WebSocket[F[_], U](
-  underlying: Socket[F, WebSocketFrame, WebSocketFrame, Nothing]  // Delegate pattern
+  underlying: Socket[
+    F,
+    WebSocketFrame,
+    WebSocketFrame,
+    Nothing
+  ]
 ) extends Socket[F, WebSocketFrame, WebSocketFrame, U] {
 
-  override def localAddress: F[SocketAddress[IpAddress]] = underlying.localAddress
-
-  override def remoteAddress: F[SocketAddress[IpAddress]] = underlying.remoteAddress
+  //  override def localAddress: F[SocketAddress[IpAddress]] = underlying.localAddress
+//
+//  override def remoteAddress: F[SocketAddress[IpAddress]] = underlying.remoteAddress
 
   override def reads: Stream[F, WebSocketFrame] = underlying.reads
 
@@ -40,8 +44,14 @@ class WebSocket[F[_], U](
 
   override def events: Stream[F, Nothing] = underlying.events
 
-  override def mutatePipeline[I2, O2, U2](
+  override def isOpen: F[Boolean] = underlying.isOpen
+
+  override def isClosed: F[Boolean] = underlying.isClosed
+
+  override def close(): F[Unit] = underlying.close()
+
+  override def mutatePipeline[I2: Socket.Decoder, O2, E2](
     mutator: ChannelPipeline => F[Unit]
-  ): F[Socket[F, I2, O2, U2]] =
+  ): F[Socket[F, I2, O2, E2]] =
     underlying.mutatePipeline(mutator)
 }

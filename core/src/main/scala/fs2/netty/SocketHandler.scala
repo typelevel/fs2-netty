@@ -21,41 +21,46 @@ import cats.effect.std.{Dispatcher, Queue}
 import cats.effect.{Async, Poll, Sync}
 import cats.syntax.all._
 import cats.{Applicative, Functor}
-import com.comcast.ip4s.{IpAddress, SocketAddress}
-import io.netty.channel.socket.SocketChannel
-import io.netty.channel.{ChannelHandlerContext, ChannelInboundHandlerAdapter, ChannelPipeline}
-import io.netty.util.ReferenceCountUtil
+import io.netty.buffer.ByteBuf
+import io.netty.channel.{Channel, ChannelHandlerContext, ChannelInboundHandlerAdapter, ChannelPipeline}
+import io.netty.util.{ReferenceCountUtil, ReferenceCounted}
 
-private final class SocketHandler[F[_]: Async, I, O, E](
+private final class SocketHandler[F[_]: Async, I, O, +E](
   disp: Dispatcher[F],
-  channel: SocketChannel,
-  readsQueue: Queue[F, AnyRef], // I | Throwable | Null
+  channel: Channel,
+  readsQueue: Queue[F, Option[Either[Throwable, I]]],
   eventsQueue: Queue[F, E]
-) extends ChannelInboundHandlerAdapter
+)(implicit inboundDecoder: Socket.Decoder[I])
+    extends ChannelInboundHandlerAdapter
     with Socket[F, I, O, E] {
 
-  override val localAddress: F[SocketAddress[IpAddress]] =
-    Sync[F].delay(SocketAddress.fromInetSocketAddress(channel.localAddress()))
+//  override val localAddress: F[SocketAddress[IpAddress]] =
+//    Sync[F].delay(SocketAddress.fromInetSocketAddress(channel.localAddress()))
+//
+//  override val remoteAddress: F[SocketAddress[IpAddress]] =
+//    Sync[F].delay(SocketAddress.fromInetSocketAddress(channel.remoteAddress()))
 
-  override val remoteAddress: F[SocketAddress[IpAddress]] =
-    Sync[F].delay(SocketAddress.fromInetSocketAddress(channel.remoteAddress()))
-
+  // TODO: we can avoid Option boxing if I <: Null
   private[this] def take(poll: Poll[F]): F[Option[I]] =
     poll(readsQueue.take) flatMap {
-      case null => Applicative[F].pure(none[I]) // EOF marker
-      case i: I => Applicative[F].pure(i.some)
-      case t: Throwable => t.raiseError[F, Option[I]]
+      case None =>
+        Applicative[F].pure(none[I]) // EOF marker
+
+      case Some(Right(i)) =>
+        Applicative[F].pure(i.some)
+
+      case Some(Left(t)) =>
+        t.raiseError[F, Option[I]]
     }
 
   private[this] val fetch: Stream[F, I] =
     Stream
       .bracketFull[F, Option[I]](poll =>
         Sync[F].delay(channel.read()) *> take(poll)
-      ) { (i, _) =>
-        if (i != null)
+      ) { (opt, _) =>
+        opt.fold(Applicative[F].unit)(i =>
           Sync[F].delay(ReferenceCountUtil.safeRelease(i)).void
-        else
-          Applicative[F].unit
+        )
       }
       .unNoneTerminate
 
@@ -77,29 +82,53 @@ private final class SocketHandler[F[_]: Async, I, O, E](
   override val writes: Pipe[F, O, INothing] =
     _.evalMap(o => write(o) *> isOpen).takeWhile(bool => bool).drain
 
-  private[this] val isOpen: F[Boolean] =
+  override val isOpen: F[Boolean] =
     Sync[F].delay(channel.isOpen)
 
-  override def channelRead(ctx: ChannelHandlerContext, msg: AnyRef) =
-    ReferenceCountUtil.touch(
-      msg,
-      s"Last touch point in FS2-Netty for ${msg.getClass.getSimpleName}"
-    ) match {
-      case i: I =>
-        disp.unsafeRunAndForget(readsQueue.offer(i))
+  override def isClosed: F[Boolean] = isOpen.map(bool => !bool)
 
-      case _ =>
-        ReferenceCountUtil.safeRelease(
-          msg
-        ) // TODO: Netty logs if release fails, but perhaps we want to catch error and do custom logging/reporting/handling
+  override def close(): F[Unit] = fromNettyFuture[F](
+    Sync[F].delay(channel.close())
+  ).void
+
+  // TODO: Even with a single channel.read() call, channelRead may get invoked more than once! Netty's "solution"
+  //  is to use FlowControlHandler. Why isn't that the default Netty behavior?!
+  override def channelRead(ctx: ChannelHandlerContext, msg: AnyRef) = {
+    inboundDecoder.decode(
+      ReferenceCountUtil.touch(
+        msg,
+        s"Last touch point in FS2-Netty for ${msg.getClass.getSimpleName}"
+      )
+    ) match {
+      case Left(errorMsg) =>
+        // TODO: Netty logs if release fails, but perhaps we want to catch error and do custom logging/reporting/handling
+        ReferenceCountUtil.safeRelease(msg)
+
+      case Right(i) =>
+        // TODO: what's the perf impact of unsafeRunSync vs unsafeRunAndForget?
+        //  FlowControlHandler & unsafeRunAndForget vs. unsafeRunSync-only?
+        disp.unsafeRunSync(readsQueue.offer(i.asRight[Exception].some))
     }
+  }
+
+  private def debug(x: Any) = x match {
+    case bb: ByteBuf =>
+      val b = bb.readByte()
+      bb.resetReaderIndex()
+      val arr = Array[Byte](1)
+      arr(0) = b
+      new String(arr)
+
+    case _ =>
+      ""
+  }
 
   override def exceptionCaught(ctx: ChannelHandlerContext, t: Throwable) =
-    disp.unsafeRunAndForget(readsQueue.offer(t))
+    disp.unsafeRunAndForget(readsQueue.offer(t.asLeft[I].some))
 
   override def channelInactive(ctx: ChannelHandlerContext) =
     try {
-      disp.unsafeRunAndForget(readsQueue.offer(null))
+      disp.unsafeRunAndForget(readsQueue.offer(None))
     } catch {
       case _: IllegalStateException =>
         () // sometimes we can see this due to race conditions in shutdown
@@ -114,7 +143,7 @@ private final class SocketHandler[F[_]: Async, I, O, E](
   override lazy val events: Stream[F, E] =
     Stream.fromQueueUnterminated(eventsQueue)
 
-  override def mutatePipeline[I2, O2, E2](
+  override def mutatePipeline[I2: Socket.Decoder, O2, E2](
     mutator: ChannelPipeline => F[Unit]
   ): F[Socket[F, I2, O2, E2]] =
     Sync[F]
@@ -127,12 +156,13 @@ private final class SocketHandler[F[_]: Async, I, O, E](
 
 private object SocketHandler {
 
-  def apply[F[_]: Async, I, O, E](
+  def apply[F[_]: Async, I: Socket.Decoder, O, E](
     disp: Dispatcher[F],
-    channel: SocketChannel
+    channel: Channel
   ): F[SocketHandler[F, I, O, E]] =
     for {
-      readsQueue <- Queue.unbounded[F, AnyRef]
+      readsQueue <- Queue.unbounded[F, Option[Either[Throwable, I]]]
       eventsQueue <- Queue.unbounded[F, E]
     } yield new SocketHandler(disp, channel, readsQueue, eventsQueue)
+
 }

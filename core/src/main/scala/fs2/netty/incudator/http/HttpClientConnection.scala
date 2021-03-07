@@ -92,6 +92,10 @@ class HttpClientConnection[F[_]: Sync](
       }
     }
 
+  implicit val decoder = new Socket.Decoder[WebSocketFrame] {
+    override def decode(x: AnyRef): Either[String, WebSocketFrame] = ???
+  }
+
   private def transitionToWebSocketsOrRespond(
     webSocketRouter: Kleisli[F, FullHttpRequest, WebSocketResponse[F]],
     request: FullHttpRequest
