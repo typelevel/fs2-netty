@@ -48,6 +48,8 @@ class WebSocket[F[_], U](
 
   override def isClosed: F[Boolean] = underlying.isClosed
 
+  override def isDetached: F[Boolean] = underlying.isDetached
+
   override def close(): F[Unit] = underlying.close()
 
   override def mutatePipeline[I2: Socket.Decoder, O2, E2](

@@ -94,7 +94,10 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
   override val isOpen: F[Boolean] =
     Sync[F].delay(channel.isOpen)
 
-  override def isClosed: F[Boolean] = isOpen.map(bool => !bool)
+  override val isClosed: F[Boolean] = isOpen.map(bool => !bool)
+
+  override val isDetached: F[Boolean] =
+    Sync[F].delay(channel.isInstanceOf[NoopChannel])
 
   override def close(): F[Unit] = fromNettyFuture[F](
     Sync[F].delay(channel.close())
@@ -158,14 +161,16 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
         ()
       ) // shutdown the events and reads streams
       oldChannel = channel // Save reference, as we first stop socket processing
-      _ <- Sync[F].delay{
-        channel = new DeadChannel(channel)
+      _ <- Sync[F].delay {
+        channel = new NoopChannel(channel)
       } // shutdown writes
       // TODO: what if queues have elements in them? E.g. Netty is concurrently calling channel read. Protocols should disallow this for the most part.
       _ <- Sync[F].delay(oldChannel.pipeline().removeLast())
       _ <- mutator(oldChannel.pipeline())
       sh <- SocketHandler[F, I2, O2, E2](disp, oldChannel)
-      _ <- Sync[F].delay(oldChannel.pipeline().addLast(sh)) // TODO: I feel like we should pass a name for debugging purposes...?!
+      _ <- Sync[F].delay(
+        oldChannel.pipeline().addLast(sh)
+      ) // TODO: I feel like we should pass a name for debugging purposes...?!
     } yield sh
 
   // not to self: if we want to schedule an action to be done when channel is closed, can also do `ctx.channel.closeFuture.addListener`

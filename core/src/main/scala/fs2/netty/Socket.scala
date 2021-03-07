@@ -44,6 +44,7 @@ trait Socket[F[_], I, O, +E] {
 
   def isOpen: F[Boolean]
   def isClosed: F[Boolean]
+  def isDetached: F[Boolean]
 
   def close(): F[Unit]
 

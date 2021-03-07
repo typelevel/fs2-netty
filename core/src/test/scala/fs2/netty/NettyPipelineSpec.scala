@@ -27,8 +27,7 @@ class NettyPipelineSpec
           pipeline <- NettyPipeline[IO](dispatcher)
           socket <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](
             pipeline
-          )
-            .map(_._2)
+          ).map(_._2)
 
           reads <- socket.reads
             .interruptAfter(1.second)
@@ -43,8 +42,7 @@ class NettyPipelineSpec
           pipeline <- NettyPipeline[IO](dispatcher)
           socket <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](
             pipeline
-          )
-            .map(_._2)
+          ).map(_._2)
 
           events: List[Nothing] <- socket.events
             .interruptAfter(1.second)
@@ -129,7 +127,7 @@ class NettyPipelineSpec
           _ <- channel
             .writeAllInboundThenFlushThenRunAllPendingTasks(byteBufs: _*)
           _ <- socket.reads
-            // fs2-netty automatically releases
+          // fs2-netty automatically releases
             .evalMap(bb => IO(bb.retain()))
             .take(11)
             .through(socket.writes)
@@ -216,10 +214,12 @@ class NettyPipelineSpec
             )
             (channel, socket) = x
 
+            // Then socket is attached to a pipeline
+            _ <- socket.isDetached.map(_ should beFalse)
+
             // When performing a no-op socket pipeline mutation
             newSocket <- socket.mutatePipeline[ByteBuf, ByteBuf, Nothing](_ =>
-              IO.unit
-            )
+              IO.unit)
 
             // Then new socket should be able to receive and write ByteBuf's
             encoder = implicitly[Encoder[Byte]]
@@ -227,13 +227,12 @@ class NettyPipelineSpec
             _ <- channel
               .writeAllInboundThenFlushThenRunAllPendingTasks(byteBufs: _*)
             _ <- newSocket.reads
-              // fs2-netty automatically releases
+            // fs2-netty automatically releases
               .evalMap(bb => IO(bb.retain()))
               .take(11)
               .through(newSocket.writes)
               .compile
               .drain
-
             str <- (0 until 11).toList
               .traverse { _ =>
                 IO(channel.underlying.readOutbound[ByteBuf]())
@@ -241,8 +240,13 @@ class NettyPipelineSpec
               }
               .map(_.toArray)
               .map(new String(_))
-
             _ <- IO(str shouldEqual "hello world")
+
+            // And new socket is attached to a pipeline
+            _ <- newSocket.isDetached.map(_ should beFalse)
+
+            // And old socket is no longer attached to a pipeline
+            _ <- socket.isDetached.map(_ should beTrue)
 
             // And old socket should not receive any of the ByteBuf's
             oldSocketReads <- socket.reads
@@ -253,7 +257,10 @@ class NettyPipelineSpec
 
             // Nor should old socket be able to write.
             oldSocketWrite <- socket.write(Unpooled.EMPTY_BUFFER).attempt
-            _ <- IO(oldSocketWrite.isLeft should beTrue)
+            _ <- IO(oldSocketWrite should beLeft[Throwable].like {
+              case t =>
+                t.getMessage should_=== ("Noop channel")
+            })
             _ <- IO(channel.underlying.outboundMessages().isEmpty should beTrue)
           } yield ok
       }
