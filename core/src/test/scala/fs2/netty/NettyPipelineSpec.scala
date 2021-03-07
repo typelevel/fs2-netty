@@ -8,7 +8,7 @@ import cats.syntax.all._
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel.CommonEncoders._
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel.Encoder
-import io.netty.buffer.ByteBuf
+import io.netty.buffer.{ByteBuf, Unpooled}
 import org.specs2.mutable.SpecificationLike
 
 import scala.concurrent.duration._
@@ -109,35 +109,44 @@ class NettyPipelineSpec
               IO(channel.underlying.readOutbound[ByteBuf]())
                 .flatMap(bb => IO(bb.readByte()))
             }
-            .map(_.foldMap(byteToString))
+            .map(_.toArray)
+            .map(new String(_))
 
           _ <- IO(str shouldEqual "hello world")
         } yield ok
     }
 
-//    "piping any reads to writes just echos back ByteBuf's written onto Netty's channel" in withResource {
-//      dispatcher =>
-//        for {
-//          pipeline <- NettyPipeline[IO](dispatcher)
-//          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](pipeline)
-//          (channel, socket) = x
-//
-//          encoder = implicitly[Encoder[Byte]]
-//          byteBufs = "hello world".getBytes().map(encoder.encode).toList
-//
-//          _ <- socket.reads.through(socket.writes).take(11).compile.drain
-//
-//          str <- (0 until 11).toList
-//            .traverse { _ =>
-//              IO(channel.underlying.readOutbound[ByteBuf]())
-//                .flatMap(bb => IO(bb.readByte()))
-//            }
-//            .map(_.toArray)
-//            .map(new String(_))
-//
-//          _ <- IO(str shouldEqual "hello world")
-//        } yield ok
-//    }
+    "piping any reads to writes just echos back ByteBuf's written onto Netty's channel" in withResource {
+      dispatcher =>
+        for {
+          pipeline <- NettyPipeline[IO](dispatcher)
+          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](pipeline)
+          (channel, socket) = x
+
+          encoder = implicitly[Encoder[Byte]]
+          byteBufs = "hello world".getBytes().map(encoder.encode).toList
+
+          _ <- channel
+            .writeAllInboundThenFlushThenRunAllPendingTasks(byteBufs: _*)
+          _ <- socket.reads
+            // fs2-netty automatically releases
+            .evalMap(bb => IO(bb.retain()))
+            .take(11)
+            .through(socket.writes)
+            .compile
+            .drain
+
+          str <- (0 until 11).toList
+            .traverse { _ =>
+              IO(channel.underlying.readOutbound[ByteBuf]())
+                .flatMap(bb => IO(bb.readByte()))
+            }
+            .map(_.toArray)
+            .map(new String(_))
+
+          _ <- IO(str shouldEqual "hello world")
+        } yield ok
+    }
 
     "closed connection in Netty appears as closed streams in fs2-netty" in withResource {
       dispatcher =>
@@ -196,6 +205,62 @@ class NettyPipelineSpec
         } yield errMsg shouldEqual "unit test error".some
     }
 
+    "mutations" should {
+      "no-op mutation creates a Socket with same behavior as original, while original Socket is unregistered from pipeline and channel" in withResource {
+        dispatcher =>
+          for {
+            // Given a channel and socket for the default pipeline
+            pipeline <- NettyPipeline[IO](dispatcher)
+            x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](
+              pipeline
+            )
+            (channel, socket) = x
+
+            // When performing a no-op socket pipeline mutation
+            newSocket <- socket.mutatePipeline[ByteBuf, ByteBuf, Nothing](_ =>
+              IO.unit
+            )
+
+            // Then new socket should be able to receive and write ByteBuf's
+            encoder = implicitly[Encoder[Byte]]
+            byteBufs = "hello world".getBytes().map(encoder.encode).toList
+            _ <- channel
+              .writeAllInboundThenFlushThenRunAllPendingTasks(byteBufs: _*)
+            _ <- newSocket.reads
+              // fs2-netty automatically releases
+              .evalMap(bb => IO(bb.retain()))
+              .take(11)
+              .through(newSocket.writes)
+              .compile
+              .drain
+
+            str <- (0 until 11).toList
+              .traverse { _ =>
+                IO(channel.underlying.readOutbound[ByteBuf]())
+                  .flatMap(bb => IO(bb.readByte()))
+              }
+              .map(_.toArray)
+              .map(new String(_))
+
+            _ <- IO(str shouldEqual "hello world")
+
+            // And old socket should not receive any of the ByteBuf's
+            oldSocketReads <- socket.reads
+              .interruptAfter(1.second)
+              .compile
+              .toList
+            _ <- IO(oldSocketReads should beEmpty)
+
+            // Nor should old socket be able to write.
+            oldSocketWrite <- socket.write(Unpooled.EMPTY_BUFFER).attempt
+            _ <- IO(oldSocketWrite.isLeft should beTrue)
+            _ <- IO(channel.underlying.outboundMessages().isEmpty should beTrue)
+          } yield ok
+      }
+
+      // varies I/O types and along with adding a handler that changes byteBufs to constant strings, affects reads stream and socket writes
+    }
+
     // test reads, writes, events, and exceptions in combination to ensure order of events makes sense
   }
 
@@ -226,8 +291,6 @@ class NettyPipelineSpec
 //  "there can be a pipeline that only receives, O = Nothing" in { ok }
 
 //  "chunking..." in { ok }
-
-//  "pipeline mutation" in { ok }
 
   private def byteToString(byte: Byte): String = {
     val bytes = new Array[Byte](1)

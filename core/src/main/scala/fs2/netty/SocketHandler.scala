@@ -18,18 +18,19 @@ package fs2
 package netty
 
 import cats.effect.std.{Dispatcher, Queue}
-import cats.effect.{Async, Poll, Sync}
+import cats.effect.{Async, Concurrent, Deferred, Poll, Sync}
 import cats.syntax.all._
 import cats.{Applicative, Functor}
 import io.netty.buffer.ByteBuf
-import io.netty.channel.{Channel, ChannelHandlerContext, ChannelInboundHandlerAdapter, ChannelPipeline}
-import io.netty.util.{ReferenceCountUtil, ReferenceCounted}
+import io.netty.channel._
+import io.netty.util.ReferenceCountUtil
 
-private final class SocketHandler[F[_]: Async, I, O, +E](
+private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
   disp: Dispatcher[F],
-  channel: Channel,
+  private var channel: Channel,
   readsQueue: Queue[F, Option[Either[Throwable, I]]],
-  eventsQueue: Queue[F, E]
+  eventsQueue: Queue[F, E],
+  pipelineMutationSwitch: Deferred[F, Unit]
 )(implicit inboundDecoder: Socket.Decoder[I])
     extends ChannelInboundHandlerAdapter
     with Socket[F, I, O, E] {
@@ -63,6 +64,7 @@ private final class SocketHandler[F[_]: Async, I, O, +E](
         )
       }
       .unNoneTerminate
+      .interruptWhen(pipelineMutationSwitch.get.attempt)
 
   override lazy val reads: Stream[F, I] =
     Stream force {
@@ -74,9 +76,16 @@ private final class SocketHandler[F[_]: Async, I, O, +E](
       )
     }
 
+  override lazy val events: Stream[F, E] =
+    Stream
+      .fromQueueUnterminated(eventsQueue)
+      .interruptWhen(pipelineMutationSwitch.get.attempt)
+
   override def write(output: O): F[Unit] =
     fromNettyFuture[F](
-      Sync[F].delay(channel.writeAndFlush(output))
+      /* Sync[F].delay(println(debug(output))) *> */ Sync[F].delay(
+        channel.writeAndFlush(output)
+      )
     ).void
 
   override val writes: Pipe[F, O, INothing] =
@@ -141,29 +150,43 @@ private final class SocketHandler[F[_]: Async, I, O, +E](
       case _ => () // TODO: probably raise error on stream...
     }
 
-  override lazy val events: Stream[F, E] =
-    Stream.fromQueueUnterminated(eventsQueue)
-
   override def mutatePipeline[I2: Socket.Decoder, O2, E2](
     mutator: ChannelPipeline => F[Unit]
   ): F[Socket[F, I2, O2, E2]] =
-    Sync[F]
-      .suspend(Sync.Type.Delay)(mutator(channel.pipeline()))
-      .flatMap(_ => SocketHandler[F, I2, O2, E2](disp, channel))
-      .map(
-        identity
-      ) // TODO: why cannot compiler infer TcpSocketHandler in flatMap?
+    for {
+      _ <- pipelineMutationSwitch.complete(
+        ()
+      ) // shutdown the events and reads streams
+      oldChannel = channel // Save reference, as we first stop socket processing
+      _ <- Sync[F].delay{
+        channel = new DeadChannel(channel)
+      } // shutdown writes
+      // TODO: what if queues have elements in them? E.g. Netty is concurrently calling channel read. Protocols should disallow this for the most part.
+      _ <- Sync[F].delay(oldChannel.pipeline().removeLast())
+      _ <- mutator(oldChannel.pipeline())
+      sh <- SocketHandler[F, I2, O2, E2](disp, oldChannel)
+      _ <- Sync[F].delay(oldChannel.pipeline().addLast(sh)) // TODO: I feel like we should pass a name for debugging purposes...?!
+    } yield sh
+
+  // not to self: if we want to schedule an action to be done when channel is closed, can also do `ctx.channel.closeFuture.addListener`
 }
 
 private object SocketHandler {
 
-  def apply[F[_]: Async, I: Socket.Decoder, O, E](
+  def apply[F[_]: Async: Concurrent, I: Socket.Decoder, O, E](
     disp: Dispatcher[F],
     channel: Channel
   ): F[SocketHandler[F, I, O, E]] =
     for {
       readsQueue <- Queue.unbounded[F, Option[Either[Throwable, I]]]
       eventsQueue <- Queue.unbounded[F, E]
-    } yield new SocketHandler(disp, channel, readsQueue, eventsQueue)
+      pipelineMutationSwitch <- Deferred[F, Unit]
+    } yield new SocketHandler(
+      disp,
+      channel,
+      readsQueue,
+      eventsQueue,
+      pipelineMutationSwitch
+    )
 
 }
