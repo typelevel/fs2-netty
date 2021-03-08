@@ -9,6 +9,7 @@ import fs2.netty.embedded.Fs2NettyEmbeddedChannel
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel.CommonEncoders._
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel.Encoder
 import io.netty.buffer.{ByteBuf, Unpooled}
+import io.netty.handler.codec.bytes.{ByteArrayDecoder, ByteArrayEncoder}
 import org.specs2.mutable.SpecificationLike
 
 import scala.concurrent.duration._
@@ -127,7 +128,7 @@ class NettyPipelineSpec
           _ <- channel
             .writeAllInboundThenFlushThenRunAllPendingTasks(byteBufs: _*)
           _ <- socket.reads
-          // fs2-netty automatically releases
+            // fs2-netty automatically releases
             .evalMap(bb => IO(bb.retain()))
             .take(11)
             .through(socket.writes)
@@ -219,7 +220,8 @@ class NettyPipelineSpec
 
             // When performing a no-op socket pipeline mutation
             newSocket <- socket.mutatePipeline[ByteBuf, ByteBuf, Nothing](_ =>
-              IO.unit)
+              IO.unit
+            )
 
             // Then new socket should be able to receive and write ByteBuf's
             encoder = implicitly[Encoder[Byte]]
@@ -227,7 +229,7 @@ class NettyPipelineSpec
             _ <- channel
               .writeAllInboundThenFlushThenRunAllPendingTasks(byteBufs: _*)
             _ <- newSocket.reads
-            // fs2-netty automatically releases
+              // fs2-netty automatically releases
               .evalMap(bb => IO(bb.retain()))
               .take(11)
               .through(newSocket.writes)
@@ -257,15 +259,56 @@ class NettyPipelineSpec
 
             // Nor should old socket be able to write.
             oldSocketWrite <- socket.write(Unpooled.EMPTY_BUFFER).attempt
-            _ <- IO(oldSocketWrite should beLeft[Throwable].like {
-              case t =>
-                t.getMessage should_=== ("Noop channel")
+            _ <- IO(oldSocketWrite should beLeft[Throwable].like { case t =>
+              t.getMessage should_=== ("Noop channel")
             })
             _ <- IO(channel.underlying.outboundMessages().isEmpty should beTrue)
           } yield ok
       }
 
       // varies I/O types and along with adding a handler that changes byteBufs to constant strings, affects reads stream and socket writes
+      "vary the Socket types" in withResource { dispatcher =>
+        for {
+          // Given a channel and socket for the default pipeline
+          pipeline <- NettyPipeline[IO](dispatcher)
+          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](
+            pipeline
+          )
+          (channel, socket) = x
+
+          pipelineDecoder = new Socket.Decoder[Array[Byte]] {
+            override def decode(x: AnyRef): Either[String, Array[Byte]] =
+              x match {
+                case array: Array[Byte] => array.asRight[String]
+                case _ =>
+                  "whoops, pipeline is misconfigured".asLeft[Array[Byte]]
+              }
+          }
+          byteSocket <- socket
+            .mutatePipeline[Array[Byte], Array[Byte], Nothing] { pipeline =>
+              for {
+                _ <- IO(pipeline.addLast(new ByteArrayDecoder))
+                _ <- IO(pipeline.addLast(new ByteArrayEncoder))
+              } yield ()
+            }(pipelineDecoder)
+
+          byteBuf = implicitly[Encoder[Array[Byte]]]
+            .encode("hello world".getBytes())
+          _ <- channel
+            .writeAllInboundThenFlushThenRunAllPendingTasks(byteBuf)
+          _ <- byteSocket.reads
+            .take(1)
+            .through(byteSocket.writes)
+            .compile
+            .drain
+          str <- IO(channel.underlying.readOutbound[ByteBuf]())
+            .flatTap(bb => IO(bb.readableBytes() shouldEqual 11))
+            .tupleRight(new Array[Byte](11))
+            .flatMap { case (buf, bytes) => IO(buf.readBytes(bytes)).as(bytes) }
+            .map(new String(_))
+          _ <- IO(str shouldEqual "hello world")
+        } yield ok
+      }
     }
 
     // test reads, writes, events, and exceptions in combination to ensure order of events makes sense
