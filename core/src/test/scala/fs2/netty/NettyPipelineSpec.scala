@@ -311,34 +311,12 @@ class NettyPipelineSpec
       }
     }
 
+    // pipeline mutation error
+
+    // socket decode error
+
     // test reads, writes, events, and exceptions in combination to ensure order of events makes sense
   }
-
-//  "byte to byte pipeline" should {}
-
-//  "custom pipeline" should {
-// repeat tests from above
-//    "pipelines that decode ByteBuf into I then fires channelRead, shows up in read stream"
-//    "pipelines that DO NOT decode ByteBuf into I but fire channelRead, DO NOT show up in read stream"
-//    "pipelines that encode O into ByteBuf (and go on to write to Netty), will send ByteBuf"
-//    "pipelines that encode O into ByteBuf (and DO NOT go on to write to Netty) (idk what kind of case this is), will NOT send ByteBuf"
-//    "pipelines that DO NOT encode O into ByteBuf, will NOT send ByteBuf"
-//    "pipelines that emit user triggered events of type E will show up in events stream"
-//    "pipelines that emit user triggered events of NOT type E will raise error in events stream"
-//    "connections that close, will shut off reads stream, writes will fail/cancel"
-//    "handlerAdded test???"
-//    "socket closes???"
-//    "pipelines that emit exceptions will raise error on reads stream"
-//    "pipelines that remove SocketHandler, will raise error on reads and events streams. Except in case of mutation"
-
-//    "test I1->Bytes, then Bytes->I2 (pipeline), and I1 == I2...nvm ByteBuf can be thrown away, decode may be" +
-//    "non-deterministic by design. Too many assumptions. Maybe can provide tests for specific cases that require correctness property, but not all" in {
-//      ok
-//    }
-//  }
-
-//  "there can be a pipeline that only sends, I = Nothing" in { ok }
-//  "there can be a pipeline that only receives, O = Nothing" in { ok }
 
 //  "chunking..." in { ok }
 
