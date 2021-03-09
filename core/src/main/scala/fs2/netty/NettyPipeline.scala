@@ -20,7 +20,6 @@ import cats.effect.std.Dispatcher
 import cats.effect.{Async, Sync}
 import cats.syntax.all._
 import io.netty.buffer.ByteBuf
-import io.netty.channel.socket.SocketChannel
 import io.netty.channel.{Channel, ChannelHandler, ChannelInitializer}
 
 // TODO: account for Sharable annotation, some of these need to be an eval, and evaluated each time whereas others can be eagerly evaluated.
@@ -28,16 +27,11 @@ class NettyPipeline[F[_]: Async, I: Socket.Decoder, O, E](
   handlers: List[ChannelHandler]
 )(
   dispatcher: Dispatcher[F]
-) {
+) extends NettyChannelInitializer[F, I, O, E] {
 
   // TODO: there are other interesting type of channels
   // TODO: Remember ChannelInitializer is Sharable!
-  def toSocketChannelInitializer(
-    cb: Socket[F, I, O, E] => F[Unit]
-  ): F[ChannelInitializer[SocketChannel]] =
-    toChannelInitializer[SocketChannel](cb)
-
-  def toChannelInitializer[C <: Channel](
+  override def toChannelInitializer[C <: Channel](
     cb: Socket[F, I, O, E] => F[Unit]
   ): F[ChannelInitializer[C]] = Sync[F].delay { (ch: C) =>
     {

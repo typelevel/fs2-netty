@@ -20,7 +20,7 @@ package netty.embedded
 import cats.effect.{Async, Sync}
 import cats.implicits._
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel.Encoder
-import fs2.netty.{NettyPipeline, Socket}
+import fs2.netty.{NettyChannelInitializer, Socket}
 import io.netty.buffer.{ByteBuf, Unpooled}
 import io.netty.channel.embedded.EmbeddedChannel
 
@@ -31,7 +31,7 @@ import io.netty.channel.embedded.EmbeddedChannel
   * @param F
   * @tparam F
   */
-final case class Fs2NettyEmbeddedChannel[F[_]](
+final case class Fs2NettyEmbeddedChannel[F[_]] private (
   underlying: EmbeddedChannelWithAutoRead
 )(implicit
   F: Sync[F]
@@ -50,12 +50,11 @@ final case class Fs2NettyEmbeddedChannel[F[_]](
     } yield ()
 
   /**
-   *
-   * @param a
-   * @param encoder
-   * @tparam A
-   * @return `true` if the write operation did add something to the inbound buffer
-   */
+    * @param a
+    * @param encoder
+    * @tparam A
+    * @return `true` if the write operation did add something to the inbound buffer
+    */
   def writeAllInboundThenFlushThenRunAllPendingTasks[A](a: A*)(implicit
     encoder: Encoder[A]
   ): F[Boolean] = for {
@@ -77,14 +76,14 @@ final case class Fs2NettyEmbeddedChannel[F[_]](
 object Fs2NettyEmbeddedChannel {
 
   def apply[F[_], I, O, E](
-    nettyPipeline: NettyPipeline[F, I, O, E]
+    initializer: NettyChannelInitializer[F, I, O, E]
   )(implicit F: Async[F]): F[(Fs2NettyEmbeddedChannel[F], Socket[F, I, O, E])] =
     for {
       channel <- F.delay(
         new EmbeddedChannelWithAutoRead()
       ) // With FlowControl/Dispatcher fixes, EmbeddedChannelWithAutoRead might not be needed after all.
       socket <- F.async[Socket[F, I, O, E]] { cb =>
-        nettyPipeline
+        initializer
           .toChannelInitializer[EmbeddedChannel] { socket =>
             F.delay(cb(socket.asRight[Throwable]))
           }
@@ -109,7 +108,7 @@ object Fs2NettyEmbeddedChannel {
       Unpooled.wrappedBuffer(a)
 
     implicit val byteEncoder: Encoder[Byte] = (a: Byte) =>
-      Unpooled.buffer(1, 1).writeByte(a)
+      Unpooled.buffer(1, 1).writeByte(a.toInt)
 
     implicit val stringEncoder: Encoder[String] = (str: String) =>
       byteArrayEncoder.encode(str.getBytes)

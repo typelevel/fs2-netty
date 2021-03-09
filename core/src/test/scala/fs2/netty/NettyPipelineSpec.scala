@@ -301,6 +301,7 @@ class NettyPipelineSpec
             .through(byteSocket.writes)
             .compile
             .drain
+
           str <- IO(channel.underlying.readOutbound[ByteBuf]())
             .flatTap(bb => IO(bb.readableBytes() shouldEqual 11))
             .tupleRight(new Array[Byte](11))
@@ -309,16 +310,17 @@ class NettyPipelineSpec
           _ <- IO(str shouldEqual "hello world")
         } yield ok
       }
+
+      // pipeline mutation error
+
+      // socket decode error
+
+      // test reads, writes, events, and exceptions in combination to ensure order of events makes sense
     }
 
-    // pipeline mutation error
-
-    // socket decode error
-
-    // test reads, writes, events, and exceptions in combination to ensure order of events makes sense
+    // eval handlers
+    // test pipeline with ByteArrayEncoder/Decoder passed into pipeline, not mutation
   }
-
-//  "chunking..." in { ok }
 
   private def byteToString(byte: Byte): String = {
     val bytes = new Array[Byte](1)
