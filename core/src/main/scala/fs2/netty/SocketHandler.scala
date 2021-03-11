@@ -60,7 +60,7 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
         Sync[F].delay(channel.read()) *> take(poll)
       ) { (opt, _) =>
         opt.fold(Applicative[F].unit)(i =>
-          Sync[F].delay(ReferenceCountUtil.safeRelease(i)).void
+          Sync[F].delay(ReferenceCountUtil.safeRelease(i)).void // TODO: check ref count before release?
         )
       }
       .unNoneTerminate

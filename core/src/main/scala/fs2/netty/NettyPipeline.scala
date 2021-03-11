@@ -16,15 +16,15 @@
 
 package fs2.netty
 
+import cats.Eval
 import cats.effect.std.Dispatcher
 import cats.effect.{Async, Sync}
 import cats.syntax.all._
 import io.netty.buffer.ByteBuf
-import io.netty.channel.{Channel, ChannelHandler, ChannelInitializer}
+import io.netty.channel.{Channel, ChannelHandler, ChannelHandlerAdapter, ChannelInboundHandler, ChannelInitializer, ChannelOutboundHandler}
 
-// TODO: account for Sharable annotation, some of these need to be an eval, and evaluated each time whereas others can be eagerly evaluated.
-class NettyPipeline[F[_]: Async, I: Socket.Decoder, O, E](
-  handlers: List[ChannelHandler]
+class NettyPipeline[F[_]: Async, I: Socket.Decoder, O, E] private (
+  handlers: List[Eval[ChannelHandler]]
 )(
   dispatcher: Dispatcher[F]
 ) extends NettyChannelInitializer[F, I, O, E] {
@@ -38,7 +38,14 @@ class NettyPipeline[F[_]: Async, I: Socket.Decoder, O, E](
       val p = ch.pipeline()
       ch.config().setAutoRead(false)
 
-      handlers.foldLeft(p)((pipeline, handler) => pipeline.addLast(handler))
+      handlers.map(_.map { case adapter: ChannelHandlerAdapter =>
+      case handler: ChannelInboundHandler =>
+      case handler: ChannelOutboundHandler =>
+      case _ =>
+      })
+      handlers
+        .map(_.value)
+        .foldLeft(p)((pipeline, handler) => pipeline.addLast(handler))
 
       dispatcher.unsafeRunAndForget {
         // TODO: read up on CE3 Dispatcher, how is it different than Context Switch? Is this taking place async? Also is cats.effect.Effect removed in CE3?
@@ -61,10 +68,30 @@ object NettyPipeline {
   def apply[F[_]: Async](
     dispatcher: Dispatcher[F]
   ): F[NettyPipeline[F, ByteBuf, ByteBuf, Nothing]] =
+    apply(dispatcher, handlers = Nil)
+
+  def apply[F[_]: Async, I: Socket.Decoder, O, E](
+    dispatcher: Dispatcher[F],
+    handlers: List[Eval[ChannelHandler]]
+  ): F[NettyPipeline[F, I, O, E]] =
     Sync[F].delay(
-      new NettyPipeline[F, ByteBuf, ByteBuf, Nothing](
-        handlers = Nil
+      new NettyPipeline[F, I, O, E](
+        memoizeSharableHandlers(handlers)
       )(dispatcher)
     )
 
+  /*
+  Netty will throw an exception if Sharable handler is added to more than one channel.
+   */
+  private[this] def memoizeSharableHandlers[E, O, I: Socket.Decoder, F[
+    _
+  ]: Async](handlers: List[Eval[ChannelHandler]]) =
+    handlers.map(eval =>
+      eval.flatMap {
+        case adapter: ChannelHandlerAdapter if adapter.isSharable =>
+          eval.memoize
+        case _ =>
+          eval
+      }
+    )
 }

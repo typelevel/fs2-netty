@@ -1,15 +1,29 @@
+/*
+ * Copyright 2021 Typelevel
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package fs2.netty.pipeline
 
 import cats.effect.std.Dispatcher
 import cats.effect.{Async, Sync}
 import cats.syntax.all._
 import fs2.netty.pipeline.AlternativeBytePipeline.ByteBufToByteChunkSocket
-import fs2.{Chunk, INothing, Pipe, Stream}
-import fs2.netty.pipeline.BytePipeline._
 import fs2.netty.{NettyChannelInitializer, NettyPipeline, Socket}
+import fs2.{Chunk, INothing, Pipe, Stream}
 import io.netty.buffer.{ByteBuf, ByteBufUtil, Unpooled}
 import io.netty.channel.{Channel, ChannelInitializer, ChannelPipeline}
-import io.netty.handler.codec.bytes.ByteArrayDecoder
 
 // This class and BytePipeline highlight the different way to create
 // sockets, i.e. rely on Netty handlers or encode transforms in fs2.

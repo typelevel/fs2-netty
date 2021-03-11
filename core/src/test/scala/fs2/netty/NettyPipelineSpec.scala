@@ -1,17 +1,25 @@
 package fs2
 package netty
 
+import cats.Eval
 import cats.effect.std.Dispatcher
 import cats.effect.testing.specs2.CatsResource
 import cats.effect.{IO, Resource}
 import cats.syntax.all._
+import fs2.netty.NettyPipelineSpec.{SharableStatefulByteBufToReadCountChannelHandler, SharableStatefulStringToReadCountChannelHandler, StatefulMessageToReadCountChannelHandler}
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel.CommonEncoders._
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel.Encoder
 import io.netty.buffer.{ByteBuf, Unpooled}
+import io.netty.channel.ChannelHandler.Sharable
+import io.netty.channel.{ChannelHandlerContext, ChannelInboundHandler}
+import io.netty.handler.codec.MessageToMessageDecoder
 import io.netty.handler.codec.bytes.{ByteArrayDecoder, ByteArrayEncoder}
+import io.netty.handler.codec.string.StringDecoder
+import io.netty.util.ReferenceCountUtil
 import org.specs2.mutable.SpecificationLike
 
+import java.util
 import scala.concurrent.duration._
 
 class NettyPipelineSpec
@@ -318,8 +326,111 @@ class NettyPipelineSpec
       // test reads, writes, events, and exceptions in combination to ensure order of events makes sense
     }
 
-    // eval handlers
     // test pipeline with ByteArrayEncoder/Decoder passed into pipeline, not mutation
+  }
+
+  "custom pipelines" should {
+    implicit val stringSocketDecoder: Socket.Decoder[String] = {
+      case str: String => str.asRight[String]
+      case _ => "pipeline misconfigured".asLeft[String]
+    }
+
+    "custom handlers can change the types of reads and writes " in withResource {
+      dispatcher =>
+        for {
+          pipeline <- NettyPipeline[IO, String, String, Nothing](
+            dispatcher,
+            handlers = List(Eval.now(new StringDecoder))
+          )
+          x <- Fs2NettyEmbeddedChannel[IO, String, String, Nothing](pipeline)
+          (channel, socket) = x
+
+          _ <- channel.writeAllInboundThenFlushThenRunAllPendingTasks(
+            "hello",
+            " ",
+            "world"
+          )
+
+          strings <- socket.reads.take(3).compile.toList
+
+          _ <- IO(strings.mkString("") should_=== "hello world")
+
+          _ <- socket.write("output message")
+
+          msg <- IO(channel.underlying.readOutbound[String]())
+          _ <- IO(msg should_=== "output message")
+        } yield ok
+    }
+
+    // tests should enforce that ByteBuf is read off embedded channel ^^
+
+    "non sharable handlers must be always evaluated per channel" in withResource {
+      dispatcher =>
+        for {
+          pipeline <- NettyPipeline[IO, String, String, Nothing](
+            dispatcher,
+            handlers =
+              List(Eval.always(new StatefulMessageToReadCountChannelHandler))
+          )
+          x <- Fs2NettyEmbeddedChannel[IO, String, String, Nothing](pipeline)
+          (channelOne, socketOne) = x
+          y <- Fs2NettyEmbeddedChannel[IO, String, String, Nothing](pipeline)
+          (channelTwo, socketTwo) = y
+
+          inputs = List("a", "b", "c")
+
+          // for same input to each channel we expect the same output, i.e. same scan of counts
+          _ <- channelOne.writeAllInboundThenFlushThenRunAllPendingTasks(
+            inputs: _*
+          )
+          countsOne <- socketOne.reads.take(3).map(_.toInt).compile.toList
+          _ <- IO(countsOne should_=== List(1, 2, 3))
+
+          _ <- channelTwo.writeAllInboundThenFlushThenRunAllPendingTasks(
+            inputs: _*
+          )
+          countsTwo <- socketTwo.reads.take(3).map(_.toInt).compile.toList
+          _ <- IO(countsTwo should_=== List(1, 2, 3))
+        } yield ok
+    }
+
+    "sharable handlers are memoized per channel regardless of the eval policy" in withResource {
+      dispatcher =>
+        for {
+          pipeline <- NettyPipeline[IO, String, String, Nothing](
+            dispatcher,
+            handlers = List(
+              Eval.always(
+                new SharableStatefulByteBufToReadCountChannelHandler
+              ),
+              Eval.now(
+                new SharableStatefulStringToReadCountChannelHandler
+              ),
+              Eval.later(
+                new SharableStatefulStringToReadCountChannelHandler
+              )
+            )
+          )
+          x <- Fs2NettyEmbeddedChannel[IO, String, String, Nothing](pipeline)
+          (channelOne, socketOne) = x
+          y <- Fs2NettyEmbeddedChannel[IO, String, String, Nothing](pipeline)
+          (channelTwo, socketTwo) = y
+
+          inputs = List("a", "b", "c")
+
+          _ <- channelOne.writeAllInboundThenFlushThenRunAllPendingTasks(
+            inputs: _*
+          )
+          countsOne <- socketOne.reads.take(3).map(_.toInt).compile.toList
+          _ <- IO(countsOne should_=== List(1, 2, 3))
+
+          _ <- channelTwo.writeAllInboundThenFlushThenRunAllPendingTasks(
+            inputs: _*
+          )
+          countsTwo <- socketTwo.reads.take(3).map(_.toInt).compile.toList
+          _ <- IO(countsTwo should_=== List(4, 5, 6))
+        } yield ok
+    }
   }
 
   private def byteToString(byte: Byte): String = {
@@ -327,4 +438,91 @@ class NettyPipelineSpec
     bytes(0) = byte
     new String(bytes)
   }
+}
+
+object NettyPipelineSpec {
+
+  /**
+    * Does not use MessageToMessageDecoder, SimpleChannelInboundHandler, or anything that extends ChannelHandlerAdapter.
+    * Netty tacks if a ChannelHandlerAdapter annotated with @Sharable is added. Netty will throw an exception if such a
+    * handler would be reused, e.g.
+    * io.netty.channel.ChannelInitializer exceptionCaught
+    * WARNING: Failed to initialize a channel. Closing: [id: 0xembedded, L:embedded - R:embedded]
+    * io.netty.channel.ChannelPipelineException: fs2.netty.NettyPipelineSpec$StatefulMessageToReadCountChannelHandler is not a @Sharable handler, so can't be added or removed multiple tim
+    */
+  private class StatefulMessageToReadCountChannelHandler
+      extends ChannelInboundHandler {
+    private var readCounter = 0
+
+    override def channelRegistered(ctx: ChannelHandlerContext): Unit =
+      ctx.fireChannelRegistered()
+
+    override def channelUnregistered(ctx: ChannelHandlerContext): Unit =
+      ctx.fireChannelUnregistered()
+
+    override def channelActive(ctx: ChannelHandlerContext): Unit =
+      ctx.fireChannelActive()
+
+    override def channelInactive(ctx: ChannelHandlerContext): Unit =
+      ctx.fireChannelInactive()
+
+    override def channelRead(ctx: ChannelHandlerContext, msg: Any): Unit = {
+      ReferenceCountUtil.safeRelease(msg)
+      readCounter += 1
+      ctx.fireChannelRead(readCounter.toString)
+    }
+
+    override def channelReadComplete(ctx: ChannelHandlerContext): Unit =
+      ctx.fireChannelReadComplete()
+
+    override def userEventTriggered(
+      ctx: ChannelHandlerContext,
+      evt: Any
+    ): Unit =
+      ctx.fireUserEventTriggered()
+
+    override def channelWritabilityChanged(ctx: ChannelHandlerContext): Unit =
+      ctx.fireChannelWritabilityChanged()
+
+    override def exceptionCaught(
+      ctx: ChannelHandlerContext,
+      cause: Throwable
+    ): Unit =
+      ctx.fireExceptionCaught(cause)
+
+    override def handlerAdded(ctx: ChannelHandlerContext): Unit = ()
+
+    override def handlerRemoved(ctx: ChannelHandlerContext): Unit = ()
+  }
+
+  @Sharable
+  private class SharableStatefulStringToReadCountChannelHandler
+      extends MessageToMessageDecoder[String] {
+    private var readCounter = 0
+
+    override def decode(
+      ctx: ChannelHandlerContext,
+      msg: String,
+      out: util.List[AnyRef]
+    ): Unit = {
+      readCounter += 1
+      out.add(readCounter.toString)
+    }
+  }
+
+  @Sharable
+  private class SharableStatefulByteBufToReadCountChannelHandler
+      extends MessageToMessageDecoder[ByteBuf] {
+    private var readCounter = 0
+
+    override def decode(
+      ctx: ChannelHandlerContext,
+      msg: ByteBuf,
+      out: util.List[AnyRef]
+    ): Unit = {
+      readCounter += 1
+      out.add(readCounter.toString)
+    }
+  }
+
 }
