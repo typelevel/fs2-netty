@@ -38,11 +38,6 @@ class NettyPipeline[F[_]: Async, I: Socket.Decoder, O, E] private (
       val p = ch.pipeline()
       ch.config().setAutoRead(false)
 
-      handlers.map(_.map { case adapter: ChannelHandlerAdapter =>
-      case handler: ChannelInboundHandler =>
-      case handler: ChannelOutboundHandler =>
-      case _ =>
-      })
       handlers
         .map(_.value)
         .foldLeft(p)((pipeline, handler) => pipeline.addLast(handler))
