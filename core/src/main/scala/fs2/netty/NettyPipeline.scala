@@ -42,8 +42,13 @@ class NettyPipeline[F[_]: Async, I: Socket.Decoder, O, E] private (
       handlers
         .map(_.value)
         .foldLeft(p)((pipeline, handler) => pipeline.addLast(handler))
-        // `channelRead` on ChannelInboundHandler's may get invoked more than once despite autoRead being turned off
-        // and handler calling read to control read rate, i.e. backpressure. Netty's solution is to use `FlowControlHandler`.
+        /* `channelRead` on ChannelInboundHandler's may get invoked more than once despite autoRead being turned off
+         and handler calling read to control read rate, i.e. backpressure. Netty's solution is to use `FlowControlHandler`.
+         Below from https://stackoverflow.com/questions/45887006/how-to-ensure-channelread-called-once-after-each-read-in-netty:
+         | Also note that most decoders will automatically perform a read even if you have AUTO_READ=false since they
+         | need to read enough data in order to yield at least one message to subsequent (i.e. your) handlers... but
+         | after they yield a message, they won't auto-read from the socket again.
+         */
         .addLast(new FlowControlHandler(false))
 
       dispatcher.unsafeRunAndForget {
