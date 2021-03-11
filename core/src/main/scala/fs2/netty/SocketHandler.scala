@@ -23,6 +23,7 @@ import cats.syntax.all._
 import cats.{Applicative, Functor}
 import io.netty.buffer.ByteBuf
 import io.netty.channel._
+import io.netty.handler.flow.FlowControlHandler
 import io.netty.util.ReferenceCountUtil
 
 private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
@@ -60,7 +61,9 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
         Sync[F].delay(channel.read()) *> take(poll)
       ) { (opt, _) =>
         opt.fold(Applicative[F].unit)(i =>
-          Sync[F].delay(ReferenceCountUtil.safeRelease(i)).void // TODO: check ref count before release?
+          Sync[F]
+            .delay(ReferenceCountUtil.safeRelease(i))
+            .void // TODO: check ref count before release?
         )
       }
       .unNoneTerminate
@@ -103,9 +106,7 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
     Sync[F].delay(channel.close())
   ).void
 
-  // TODO: Even with a single channel.read() call, channelRead may get invoked more than once! Netty's "solution"
-  //  is to use FlowControlHandler. Why isn't that the default Netty behavior?!
-  override def channelRead(ctx: ChannelHandlerContext, msg: AnyRef) = {
+  override def channelRead(ctx: ChannelHandlerContext, msg: AnyRef) =
     inboundDecoder.decode(
       ReferenceCountUtil.touch(
         msg,
@@ -117,12 +118,10 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
         ReferenceCountUtil.safeRelease(msg)
 
       case Right(i) =>
-        // TODO: what's the perf impact of unsafeRunSync vs unsafeRunAndForget?
-        //  FlowControlHandler & unsafeRunAndForget vs. unsafeRunSync-only?
-        //  Review for other Netty methods as well.
-        disp.unsafeRunSync(readsQueue.offer(i.asRight[Exception].some))
+        // TODO: what's the perf impact of unsafeRunSync-only vs. unsafeRunAndForget-&-FlowControlHandler?
+        //  Review ordering for other ChannelHandler "callback" methods as well.
+        disp.unsafeRunAndForget(readsQueue.offer(i.asRight[Exception].some))
     }
-  }
 
   private def debug(x: Any) = x match {
     case bb: ByteBuf =>
@@ -157,6 +156,7 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
     mutator: ChannelPipeline => F[Unit]
   ): F[Socket[F, I2, O2, E2]] =
     for {
+      // TODO: Edge cases aren't fully tested
       _ <- pipelineMutationSwitch.complete(
         ()
       ) // shutdown the events and reads streams
@@ -164,13 +164,28 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
       _ <- Sync[F].delay {
         channel = new NoopChannel(channel)
       } // shutdown writes
-      // TODO: what if queues have elements in them? E.g. Netty is concurrently calling channel read. Protocols should disallow this for the most part.
-      _ <- Sync[F].delay(oldChannel.pipeline().removeLast())
+      _ <- Sync[F].delay(
+        oldChannel.pipeline().removeLast()
+      ) //remove SocketHandler
+      _ <- Sync[F].delay(
+        oldChannel.pipeline().removeLast()
+      ) //remove FlowControlHandler
+      /*
+      TODO: Above may dump remaining messages into fireChannelRead, do we care about those messages? Should we
+       signal up that this happened? Probably should as certain apps may care about a peer not behaving according to
+       the expected protocol. In this case, we add a custom handler to capture those messages, then either:
+        - raiseError on the new reads stream, or
+        - set a Signal
+       Also need to think through edge case where Netty is concurrently calling channel read vs. this manipulating
+       pipeline. Maybe protocols need to inform this layer about when exactly to transition.
+       */
       _ <- mutator(oldChannel.pipeline())
       sh <- SocketHandler[F, I2, O2, E2](disp, oldChannel)
+      // TODO: pass a name for debugging purposes?
       _ <- Sync[F].delay(
-        oldChannel.pipeline().addLast(sh)
-      ) // TODO: I feel like we should pass a name for debugging purposes...?!
+        oldChannel.pipeline().addLast(new FlowControlHandler(false))
+      )
+      _ <- Sync[F].delay(oldChannel.pipeline().addLast(sh))
     } yield sh
 
   // not to self: if we want to schedule an action to be done when channel is closed, can also do `ctx.channel.closeFuture.addListener`

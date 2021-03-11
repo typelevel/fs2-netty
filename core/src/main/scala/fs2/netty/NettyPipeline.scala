@@ -21,7 +21,8 @@ import cats.effect.std.Dispatcher
 import cats.effect.{Async, Sync}
 import cats.syntax.all._
 import io.netty.buffer.ByteBuf
-import io.netty.channel.{Channel, ChannelHandler, ChannelHandlerAdapter, ChannelInboundHandler, ChannelInitializer, ChannelOutboundHandler}
+import io.netty.channel.{Channel, ChannelHandler, ChannelHandlerAdapter, ChannelInitializer}
+import io.netty.handler.flow.FlowControlHandler
 
 class NettyPipeline[F[_]: Async, I: Socket.Decoder, O, E] private (
   handlers: List[Eval[ChannelHandler]]
@@ -41,6 +42,9 @@ class NettyPipeline[F[_]: Async, I: Socket.Decoder, O, E] private (
       handlers
         .map(_.value)
         .foldLeft(p)((pipeline, handler) => pipeline.addLast(handler))
+        // `channelRead` on ChannelInboundHandler's may get invoked more than once despite autoRead being turned off
+        // and handler calling read to control read rate, i.e. backpressure. Netty's solution is to use `FlowControlHandler`.
+        .addLast(new FlowControlHandler(false))
 
       dispatcher.unsafeRunAndForget {
         // TODO: read up on CE3 Dispatcher, how is it different than Context Switch? Is this taking place async? Also is cats.effect.Effect removed in CE3?
