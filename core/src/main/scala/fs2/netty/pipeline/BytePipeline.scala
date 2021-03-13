@@ -36,8 +36,13 @@ class BytePipeline[F[_]: Async](
   ): F[ChannelInitializer[C]] =
     byteArrayPipeline
       .toChannelInitializer { byteArraySocket =>
+        /*
+        TODO: Can't do this b/c ProFunctor isn't Chunk aware
+          Sync[F].delay(byteArraySocket.dimap[Chunk[Byte], Byte](toByteBuf)(Chunk.array(_)))
+         */
         Sync[F].delay(new ChunkingByteSocket[F](byteArraySocket)).flatMap(cb)
       }
+
 }
 
 object BytePipeline {
@@ -85,17 +90,19 @@ object BytePipeline {
       mutator: ChannelPipeline => F[Unit]
     ): F[Socket[F, O2, I2]] = socket.mutatePipeline[O2, I2](mutator)
 
-    // TODO: alloc over unpooled?
-    private[this] def toByteBuf(chunk: Chunk[Byte]): ByteBuf =
-      chunk match {
-        case Chunk.ArraySlice(arr, off, len) =>
-          Unpooled.wrappedBuffer(arr, off, len)
-
-        case c: Chunk.ByteBuffer =>
-          Unpooled.wrappedBuffer(c.toByteBuffer)
-
-        case c =>
-          Unpooled.wrappedBuffer(c.toArray)
-      }
   }
+
+  // TODO: alloc over unpooled?
+  private def toByteBuf(chunk: Chunk[Byte]): ByteBuf =
+    chunk match {
+      case Chunk.ArraySlice(arr, off, len) =>
+        Unpooled.wrappedBuffer(arr, off, len)
+
+      case c: Chunk.ByteBuffer =>
+        Unpooled.wrappedBuffer(c.toByteBuffer)
+
+      case c =>
+        Unpooled.wrappedBuffer(c.toArray)
+    }
+
 }
