@@ -28,11 +28,11 @@ import io.netty.channel.{Channel, ChannelInitializer, ChannelPipeline}
 import io.netty.handler.codec.bytes.ByteArrayDecoder
 
 class BytePipeline[F[_]: Async](
-  byteArrayPipeline: NettyPipeline[F, Array[Byte], ByteBuf]
-) extends NettyChannelInitializer[F, Byte, Chunk[Byte]] {
+  byteArrayPipeline: NettyPipeline[F, ByteBuf, Array[Byte]]
+) extends NettyChannelInitializer[F, Chunk[Byte], Byte] {
 
   override def toChannelInitializer[C <: Channel](
-    cb: Socket[F, Byte, Chunk[Byte]] => F[Unit]
+    cb: Socket[F, Chunk[Byte], Byte] => F[Unit]
   ): F[ChannelInitializer[C]] =
     byteArrayPipeline
       .toChannelInitializer { byteArraySocket =>
@@ -44,7 +44,7 @@ object BytePipeline {
 
   def apply[F[_]: Async](dispatcher: Dispatcher[F]): F[BytePipeline[F]] =
     for {
-      pipeline <- NettyPipeline[F, Array[Byte], ByteBuf](
+      pipeline <- NettyPipeline[F, ByteBuf, Array[Byte]](
         dispatcher,
         handlers = List(
           Eval.always(new ByteArrayDecoder)
@@ -59,8 +59,8 @@ object BytePipeline {
   }
 
   private class ChunkingByteSocket[F[_]: Async](
-    socket: Socket[F, Array[Byte], ByteBuf]
-  ) extends Socket[F, Byte, Chunk[Byte]] {
+    socket: Socket[F, ByteBuf, Array[Byte]]
+  ) extends Socket[F, Chunk[Byte], Byte] {
 
     override lazy val reads: Stream[F, Byte] =
       socket.reads.map(Chunk.array(_)).flatMap(Stream.chunk)
@@ -81,9 +81,9 @@ object BytePipeline {
 
     override def close(): F[Unit] = socket.close()
 
-    override def mutatePipeline[I2: Socket.Decoder, O2](
+    override def mutatePipeline[O2, I2: Socket.Decoder](
       mutator: ChannelPipeline => F[Unit]
-    ): F[Socket[F, I2, O2]] = socket.mutatePipeline[I2, O2](mutator)
+    ): F[Socket[F, O2, I2]] = socket.mutatePipeline[O2, I2](mutator)
 
     // TODO: alloc over unpooled?
     private[this] def toByteBuf(chunk: Chunk[Byte]): ByteBuf =

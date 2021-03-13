@@ -37,8 +37,8 @@ import io.netty.handler.codec.http.websocketx.{WebSocketFrame, WebSocketServerPr
 class HttpClientConnection[F[_]: Sync](
   clientSocket: Socket[
     F,
-    FullHttpRequest,
-    FullHttpResponse
+    FullHttpResponse,
+    FullHttpRequest
   ]
 ) {
 

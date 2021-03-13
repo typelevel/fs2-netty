@@ -75,14 +75,14 @@ final case class Fs2NettyEmbeddedChannel[F[_]] private (
 
 object Fs2NettyEmbeddedChannel {
 
-  def apply[F[_], I, O](
-    initializer: NettyChannelInitializer[F, I, O]
-  )(implicit F: Async[F]): F[(Fs2NettyEmbeddedChannel[F], Socket[F, I, O])] =
+  def apply[F[_], O, I](
+    initializer: NettyChannelInitializer[F, O, I]
+  )(implicit F: Async[F]): F[(Fs2NettyEmbeddedChannel[F], Socket[F, O, I])] =
     for {
       channel <- F.delay(
         new EmbeddedChannelWithAutoRead()
       ) // With FlowControl/Dispatcher fixes EmbeddedChannelWithAutoRead might not be needed after all.
-      socket <- F.async[Socket[F, I, O]] { cb =>
+      socket <- F.async[Socket[F, O, I]] { cb =>
         initializer
           .toChannelInitializer[EmbeddedChannel] { socket =>
             F.delay(cb(socket.asRight[Throwable]))

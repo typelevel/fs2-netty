@@ -74,13 +74,14 @@ final class Network[F[_]: Async] private (
       : Stream[F, Socket[F, Byte, Byte]] =
     Stream.resource(serverResource(host, Some(port), options)).flatMap(_._2)
 
-  def server[I: Socket.Decoder, O](
+  // TODO: maybe here it's nicer to have the I first then O?, or will that be confusing if Socket has reversed order?
+  def server[O, I: Socket.Decoder](
       host: Option[Host],
       port: Port,
       handlers: NonEmptyList[ChannelHandler],
       options: List[ChannelOption])
-      : Stream[F, Socket[F, I, O]] =
-    Stream.resource(serverResource[I, O](host, Some(port),handlers,  options)).flatMap(_._2)
+      : Stream[F, Socket[F, O, I]] =
+    Stream.resource(serverResource[O, I](host, Some(port),handlers,  options)).flatMap(_._2)
 
   def serverResource(
       host: Option[Host],
@@ -89,26 +90,26 @@ final class Network[F[_]: Async] private (
       : Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, Byte, Byte]])] =
     serverResource(host, port, handlers = Nil,options)
 
-  def serverResource[I: Socket.Decoder, O](
+  def serverResource[O, I: Socket.Decoder](
     host: Option[Host],
     port: Option[Port],
     handlers: NonEmptyList[ChannelHandler],
     options: List[ChannelOption]
-  ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, I, O]])] =
+  ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, O, I]])] =
     serverResource(host, port, handlers.toList, options)
 
-  private def serverResource[I: Socket.Decoder, O](
+  private def serverResource[O, I: Socket.Decoder](
     host: Option[Host],
     port: Option[Port],
     handlers: List[ChannelHandler],
     options: List[ChannelOption]
-  ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, I, O]])] =
+  ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, O, I]])] =
     for {
       dispatcher <- Dispatcher[F]
 
       res <- Resource suspend {
         for {
-          clientConnections <- Queue.unbounded[F, Socket[F, I, O]]
+          clientConnections <- Queue.unbounded[F, Socket[F, O, I]]
 
           resolvedHost <- host.traverse(_.resolve[F])
 
@@ -132,7 +133,7 @@ final class Network[F[_]: Async] private (
                   )
                   // TODO: read up on CE3 Dispatcher, how is it different than Context Switch? Is this taking place async?
                   dispatcher.unsafeRunAndForget {
-                    SocketHandler[F, I, O](dispatcher, ch)
+                    SocketHandler[F, O, I](dispatcher, ch)
                       .flatTap(h => Sync[F].delay(p.addLast(h)))
                       .flatMap(clientConnections.offer)
                   }

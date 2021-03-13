@@ -51,8 +51,8 @@ class WebSocket[F[_]](
 
   override def close(): F[Unit] = underlying.close()
 
-  override def mutatePipeline[I2: Socket.Decoder, O2](
+  override def mutatePipeline[O2, I2: Socket.Decoder](
     mutator: ChannelPipeline => F[Unit]
-  ): F[Socket[F, I2, O2]] =
+  ): F[Socket[F, O2, I2]] =
     underlying.mutatePipeline(mutator)
 }

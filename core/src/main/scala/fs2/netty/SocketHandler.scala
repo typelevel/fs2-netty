@@ -26,7 +26,7 @@ import io.netty.channel._
 import io.netty.handler.flow.FlowControlHandler
 import io.netty.util.ReferenceCountUtil
 
-private final class SocketHandler[F[_]: Async: Concurrent, I, O](
+private final class SocketHandler[F[_]: Async: Concurrent, O, I](
   disp: Dispatcher[F],
   private var channel: Channel,
   readsQueue: Queue[F, Option[Either[Throwable, I]]],
@@ -34,7 +34,7 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O](
   pipelineMutationSwitch: Deferred[F, Unit]
 )(implicit inboundDecoder: Socket.Decoder[I])
     extends ChannelInboundHandlerAdapter
-    with Socket[F, I, O] {
+    with Socket[F, O, I] {
 
 //  override val localAddress: F[SocketAddress[IpAddress]] =
 //    Sync[F].delay(SocketAddress.fromInetSocketAddress(channel.localAddress()))
@@ -155,9 +155,9 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O](
     // where needed. This way we can keep a thread-unsafe mutable queue.
     disp.unsafeRunAndForget(eventsQueue.offer(evt))
 
-  override def mutatePipeline[I2: Socket.Decoder, O2](
+  override def mutatePipeline[O2,I2: Socket.Decoder](
     mutator: ChannelPipeline => F[Unit]
-  ): F[Socket[F, I2, O2]] =
+  ): F[Socket[F, O2, I2]] =
     for {
       // TODO: Edge cases aren't fully tested
       _ <- pipelineMutationSwitch.complete(
@@ -183,7 +183,7 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O](
        pipeline. Maybe protocols need to inform this layer about when exactly to transition.
        */
       _ <- mutator(oldChannel.pipeline())
-      sh <- SocketHandler[F, I2, O2](disp, oldChannel)
+      sh <- SocketHandler[F, O2, I2](disp, oldChannel)
       // TODO: pass a name for debugging purposes?
       _ <- Sync[F].delay(
         oldChannel.pipeline().addLast(new FlowControlHandler(false))
@@ -196,10 +196,10 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O](
 
 private object SocketHandler {
 
-  def apply[F[_]: Async: Concurrent, I: Socket.Decoder, O](
+  def apply[F[_]: Async: Concurrent, O, I: Socket.Decoder](
     disp: Dispatcher[F],
     channel: Channel
-  ): F[SocketHandler[F, I, O]] =
+  ): F[SocketHandler[F, O, I]] =
     for {
       readsQueue <- Queue.unbounded[F, Option[Either[Throwable, I]]]
       eventsQueue <- Queue.unbounded[F, AnyRef]

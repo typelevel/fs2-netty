@@ -42,7 +42,7 @@ object HttpServer {
       network <- Network[F]
 
       rawHttpClientConnection <- network
-        .serverResource[FullHttpRequest, FullHttpResponse](
+        .serverResource[FullHttpResponse, FullHttpRequest](
           host = None,
           port = None,
           handlers = NonEmptyList.of(

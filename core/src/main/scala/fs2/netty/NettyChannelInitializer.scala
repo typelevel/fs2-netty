@@ -19,14 +19,14 @@ package fs2.netty
 import io.netty.channel.{Channel, ChannelInitializer}
 import io.netty.channel.socket.SocketChannel
 
-trait NettyChannelInitializer[F[_], I, O] {
+trait NettyChannelInitializer[F[_], O, I] {
 
   def toSocketChannelInitializer(
-    cb: Socket[F, I, O] => F[Unit]
+    cb: Socket[F, O, I] => F[Unit]
   ): F[ChannelInitializer[SocketChannel]] =
     toChannelInitializer[SocketChannel](cb)
 
   def toChannelInitializer[C <: Channel](
-    cb: Socket[F, I, O] => F[Unit]
+    cb: Socket[F, O, I] => F[Unit]
   ): F[ChannelInitializer[C]]
 }

@@ -19,7 +19,7 @@ class BytePipelineSpec
   "can echo back what is written" in withResource { dispatcher =>
     for {
       pipeline <- BytePipeline(dispatcher)
-      x <- Fs2NettyEmbeddedChannel[IO, Byte, Chunk[Byte]](pipeline)
+      x <- Fs2NettyEmbeddedChannel[IO, Chunk[Byte], Byte](pipeline)
       (channel, socket) = x
 
       _ <- channel.writeAllInboundThenFlushThenRunAllPendingTasks("hello world")
@@ -43,7 +43,7 @@ class BytePipelineSpec
   "alternative can echo back what is written" in withResource { dispatcher =>
     for {
       pipeline <- AlternativeBytePipeline(dispatcher)
-      x <- Fs2NettyEmbeddedChannel[IO, Byte, Chunk[Byte]](pipeline)
+      x <- Fs2NettyEmbeddedChannel[IO, Chunk[Byte], Byte](pipeline)
       (channel, socket) = x
 
       _ <- channel.writeAllInboundThenFlushThenRunAllPendingTasks("hello world")

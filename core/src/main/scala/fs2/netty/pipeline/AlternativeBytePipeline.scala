@@ -30,10 +30,10 @@ import io.netty.channel.{Channel, ChannelInitializer, ChannelPipeline}
 // sockets, i.e. rely on Netty handlers or encode transforms in fs2.
 class AlternativeBytePipeline[F[_]: Async](
   byteBufPipeline: NettyPipeline[F, ByteBuf, ByteBuf]
-) extends NettyChannelInitializer[F, Byte, Chunk[Byte]] {
+) extends NettyChannelInitializer[F, Chunk[Byte], Byte] {
 
   override def toChannelInitializer[C <: Channel](
-    cb: Socket[F, Byte, Chunk[Byte]] => F[Unit]
+    cb: Socket[F, Chunk[Byte], Byte] => F[Unit]
   ): F[ChannelInitializer[C]] =
     byteBufPipeline
       .toChannelInitializer { byteBufSocket =>
@@ -54,7 +54,7 @@ object AlternativeBytePipeline {
 
   private class ByteBufToByteChunkSocket[F[_]: Async](
     socket: Socket[F, ByteBuf, ByteBuf]
-  ) extends Socket[F, Byte, Chunk[Byte]] {
+  ) extends Socket[F, Chunk[Byte], Byte] {
 
     override lazy val reads: Stream[F, Byte] =
       socket.reads
@@ -79,9 +79,9 @@ object AlternativeBytePipeline {
 
     override def close(): F[Unit] = socket.close()
 
-    override def mutatePipeline[I2: Socket.Decoder, O2](
+    override def mutatePipeline[O2, I2: Socket.Decoder](
       mutator: ChannelPipeline => F[Unit]
-    ): F[Socket[F, I2, O2]] = socket.mutatePipeline[I2, O2](mutator)
+    ): F[Socket[F, O2, I2]] = socket.mutatePipeline[O2, I2](mutator)
 
     private[this] def toByteBuf(chunk: Chunk[Byte]): ByteBuf =
       chunk match {
