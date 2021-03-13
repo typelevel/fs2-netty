@@ -40,10 +40,10 @@ final class Network[F[_]: Async] private (
   def client(
       addr: SocketAddress[Host],
       options: List[ChannelOption] = Nil)
-      : Resource[F, Socket[F, Byte, Byte, Nothing]] =
+      : Resource[F, Socket[F, Byte, Byte]] =
     Dispatcher[F] flatMap { disp =>
       Resource suspend {
-        Concurrent[F].deferred[Socket[F, Byte, Byte, Nothing]] flatMap { d =>
+        Concurrent[F].deferred[Socket[F, Byte, Byte]] flatMap { d =>
           addr.host.resolve[F] flatMap { resolved =>
             Sync[F] delay {
               val bootstrap = new Bootstrap
@@ -71,44 +71,44 @@ final class Network[F[_]: Async] private (
       host: Option[Host],
       port: Port,
       options: List[ChannelOption])
-      : Stream[F, Socket[F, Byte, Byte, Nothing]] =
+      : Stream[F, Socket[F, Byte, Byte]] =
     Stream.resource(serverResource(host, Some(port), options)).flatMap(_._2)
 
-  def server[I: Socket.Decoder, O, E](
+  def server[I: Socket.Decoder, O](
       host: Option[Host],
       port: Port,
       handlers: NonEmptyList[ChannelHandler],
       options: List[ChannelOption])
-      : Stream[F, Socket[F, I, O, E]] =
-    Stream.resource(serverResource[I, O, E](host, Some(port),handlers,  options)).flatMap(_._2)
+      : Stream[F, Socket[F, I, O]] =
+    Stream.resource(serverResource[I, O](host, Some(port),handlers,  options)).flatMap(_._2)
 
   def serverResource(
       host: Option[Host],
       port: Option[Port],
       options: List[ChannelOption])
-      : Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, Byte, Byte, Nothing]])] =
+      : Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, Byte, Byte]])] =
     serverResource(host, port, handlers = Nil,options)
 
-  def serverResource[I: Socket.Decoder, O, E](
+  def serverResource[I: Socket.Decoder, O](
     host: Option[Host],
     port: Option[Port],
     handlers: NonEmptyList[ChannelHandler],
     options: List[ChannelOption]
-  ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, I, O, E]])] =
+  ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, I, O]])] =
     serverResource(host, port, handlers.toList, options)
 
-  private def serverResource[I: Socket.Decoder, O, E](
+  private def serverResource[I: Socket.Decoder, O](
     host: Option[Host],
     port: Option[Port],
     handlers: List[ChannelHandler],
     options: List[ChannelOption]
-  ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, I, O, E]])] =
+  ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, I, O]])] =
     for {
       dispatcher <- Dispatcher[F]
 
       res <- Resource suspend {
         for {
-          clientConnections <- Queue.unbounded[F, Socket[F, I, O, E]]
+          clientConnections <- Queue.unbounded[F, Socket[F, I, O]]
 
           resolvedHost <- host.traverse(_.resolve[F])
 
@@ -132,7 +132,7 @@ final class Network[F[_]: Async] private (
                   )
                   // TODO: read up on CE3 Dispatcher, how is it different than Context Switch? Is this taking place async?
                   dispatcher.unsafeRunAndForget {
-                    SocketHandler[F, I, O, E](dispatcher, ch)
+                    SocketHandler[F, I, O](dispatcher, ch)
                       .flatTap(h => Sync[F].delay(p.addLast(h)))
                       .flatMap(clientConnections.offer)
                   }
@@ -181,7 +181,7 @@ final class Network[F[_]: Async] private (
 
   private[this] def initializer(
       disp: Dispatcher[F])(
-      result: Socket[F, Byte, Byte, Nothing] => F[Unit])
+      result: Socket[F, Byte, Byte] => F[Unit])
       : ChannelInitializer[SocketChannel] =
     new ChannelInitializer[SocketChannel] {
       def initChannel(ch: SocketChannel) = {
@@ -189,7 +189,7 @@ final class Network[F[_]: Async] private (
         ch.config().setAutoRead(false)
 
         disp unsafeRunAndForget {
-          SocketHandler[F, Byte, Byte, Nothing](disp, ch) flatMap { s =>
+          SocketHandler[F, Byte, Byte](disp, ch) flatMap { s =>
             Sync[F].delay(p.addLast(s)) *> result(s)
           }
         }

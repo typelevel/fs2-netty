@@ -24,16 +24,16 @@ import io.netty.buffer.ByteBuf
 import io.netty.channel.{Channel, ChannelHandler, ChannelHandlerAdapter, ChannelInitializer}
 import io.netty.handler.flow.FlowControlHandler
 
-class NettyPipeline[F[_]: Async, I: Socket.Decoder, O, E] private (
+class NettyPipeline[F[_]: Async, I: Socket.Decoder, O] private (
   handlers: List[Eval[ChannelHandler]]
 )(
   dispatcher: Dispatcher[F]
-) extends NettyChannelInitializer[F, I, O, E] {
+) extends NettyChannelInitializer[F, I, O] {
 
   // TODO: there are other interesting type of channels
   // TODO: Remember ChannelInitializer is Sharable!
   override def toChannelInitializer[C <: Channel](
-    cb: Socket[F, I, O, E] => F[Unit]
+    cb: Socket[F, I, O] => F[Unit]
   ): F[ChannelInitializer[C]] = Sync[F].delay { (ch: C) =>
     {
       val p = ch.pipeline()
@@ -53,7 +53,7 @@ class NettyPipeline[F[_]: Async, I: Socket.Decoder, O, E] private (
 
       dispatcher.unsafeRunAndForget {
         // TODO: read up on CE3 Dispatcher, how is it different than Context Switch? Is this taking place async? Also is cats.effect.Effect removed in CE3?
-        SocketHandler[F, I, O, E](dispatcher, ch)
+        SocketHandler[F, I, O](dispatcher, ch)
           .flatTap(h =>
             Sync[F].delay(p.addLast(h))
           ) // TODO: pass EventExecutorGroup
@@ -71,15 +71,15 @@ object NettyPipeline {
 
   def apply[F[_]: Async](
     dispatcher: Dispatcher[F]
-  ): F[NettyPipeline[F, ByteBuf, ByteBuf, Nothing]] =
+  ): F[NettyPipeline[F, ByteBuf, ByteBuf]] =
     apply(dispatcher, handlers = Nil)
 
-  def apply[F[_]: Async, I: Socket.Decoder, O, E](
+  def apply[F[_]: Async, I: Socket.Decoder, O](
     dispatcher: Dispatcher[F],
     handlers: List[Eval[ChannelHandler]]
-  ): F[NettyPipeline[F, I, O, E]] =
+  ): F[NettyPipeline[F, I, O]] =
     Sync[F].delay(
-      new NettyPipeline[F, I, O, E](
+      new NettyPipeline[F, I, O](
         memoizeSharableHandlers(handlers)
       )(dispatcher)
     )

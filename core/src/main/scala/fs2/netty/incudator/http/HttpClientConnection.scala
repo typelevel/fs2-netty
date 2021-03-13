@@ -38,8 +38,7 @@ class HttpClientConnection[F[_]: Sync](
   clientSocket: Socket[
     F,
     FullHttpRequest,
-    FullHttpResponse,
-    Nothing
+    FullHttpResponse
   ]
 ) {
 
@@ -106,7 +105,7 @@ class HttpClientConnection[F[_]: Sync](
             cb
           ) =>
         clientSocket
-          .mutatePipeline[WebSocketFrame, WebSocketFrame, HandshakeComplete](
+          .mutatePipeline[WebSocketFrame, WebSocketFrame](
             installWebSocketHandlersAndContinueWebSocketUpgrade(
               request,
               wsConfigs
@@ -114,16 +113,19 @@ class HttpClientConnection[F[_]: Sync](
           )
           .flatMap { connection =>
             connection.events
-              .find(_ => true) // only take 1st event since Netty will only first once
+              // only take 1st event since Netty will only first once
+              .collectFirst { case hc: HandshakeComplete => hc }
               .evalTap(handshakeComplete =>
                 connection
                   // TODO: maybe like a covary method?
-                  .mutatePipeline[WebSocketFrame, WebSocketFrame, Nothing](_ => Applicative[F].unit)
+                  .mutatePipeline[WebSocketFrame, WebSocketFrame](_ =>
+                    Applicative[F].unit
+                  )
                   .map(wsConn =>
                     cb(
                       (
                         handshakeComplete,
-                        new WebSocket[F, Nothing](underlying = wsConn)
+                        new WebSocket[F](underlying = wsConn)
                       ).asRight[Throwable]
                     )
                   )
@@ -132,7 +134,7 @@ class HttpClientConnection[F[_]: Sync](
               .drain
           }
           .onError { case e =>
-            cb(e.asLeft[(HandshakeComplete, WebSocket[F, Nothing])])
+            cb(e.asLeft[(HandshakeComplete, WebSocket[F])])
           }
           .void
 
@@ -216,7 +218,7 @@ object HttpClientConnection {
     // One of throwable could be WebSocketHandshakeException
     final case class SwitchToWebSocketProtocol[F[_]](
       wsConfigs: WebSocketConfig,
-      cb: Either[Throwable, (HandshakeComplete, WebSocket[F, Nothing])] => F[
+      cb: Either[Throwable, (HandshakeComplete, WebSocket[F])] => F[
         Unit
       ]
     ) extends WebSocketResponse[F]

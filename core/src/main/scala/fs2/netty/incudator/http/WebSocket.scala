@@ -21,14 +21,13 @@ import fs2.{INothing, Pipe, Stream}
 import io.netty.channel.ChannelPipeline
 import io.netty.handler.codec.http.websocketx.WebSocketFrame
 
-class WebSocket[F[_], U](
+class WebSocket[F[_]](
   underlying: Socket[
     F,
     WebSocketFrame,
-    WebSocketFrame,
-    Nothing
+    WebSocketFrame
   ]
-) extends Socket[F, WebSocketFrame, WebSocketFrame, U] {
+) extends Socket[F, WebSocketFrame, WebSocketFrame] {
 
   //  override def localAddress: F[SocketAddress[IpAddress]] = underlying.localAddress
 //
@@ -42,7 +41,7 @@ class WebSocket[F[_], U](
 
   override def writes: Pipe[F, WebSocketFrame, INothing] = underlying.writes
 
-  override def events: Stream[F, Nothing] = underlying.events
+  override def events: Stream[F, AnyRef] = underlying.events
 
   override def isOpen: F[Boolean] = underlying.isOpen
 
@@ -52,8 +51,8 @@ class WebSocket[F[_], U](
 
   override def close(): F[Unit] = underlying.close()
 
-  override def mutatePipeline[I2: Socket.Decoder, O2, E2](
+  override def mutatePipeline[I2: Socket.Decoder, O2](
     mutator: ChannelPipeline => F[Unit]
-  ): F[Socket[F, I2, O2, E2]] =
+  ): F[Socket[F, I2, O2]] =
     underlying.mutatePipeline(mutator)
 }

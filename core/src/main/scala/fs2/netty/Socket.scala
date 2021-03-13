@@ -25,7 +25,7 @@ import io.netty.channel.ChannelPipeline
 //  and WS use cases this is completely ok. One alternative is scala reflections api, but will overhead be acceptable
 //  along the critical code path (assuming high volume servers/clients)?
 //  Think through variance of types.
-trait Socket[F[_], I, O, +E] {
+trait Socket[F[_], I, O] {
 
   // TODO: Temporarily disabling while making Socket generic enough to test with EmbeddedChannel. Furthermore, these
   //  methods restrict Socket to be a InetChannel which isn't compatible with EmbeddedChannel. Netty also works with
@@ -37,7 +37,21 @@ trait Socket[F[_], I, O, +E] {
 
   def reads: Stream[F, I]
 
-  def events: Stream[F, E]
+  /**
+   * Handlers may optionally generate events to communicate with downstream handlers. These include but not limited to
+   * signals about handshake complete, timeouts, and errors.
+   *
+   * Some examples from Netty:
+   *  - ChannelInputShutdownReadComplete
+   *  - ChannelInputShutdownEvent
+   *  - SslCompletionEvent
+   *  - ProxyConnectionEvent
+   *  - HandshakeComplete
+   *  - Http2FrameStreamEvent
+   *  - IdleStateEvent
+   * @return
+   */
+  def events: Stream[F, AnyRef]
 
   def write(output: O): F[Unit]
   def writes: Pipe[F, O, INothing]
@@ -48,9 +62,9 @@ trait Socket[F[_], I, O, +E] {
 
   def close(): F[Unit]
 
-  def mutatePipeline[I2: Socket.Decoder, O2, E2](
+  def mutatePipeline[I2: Socket.Decoder, O2](
     mutator: ChannelPipeline => F[Unit]
-  ): F[Socket[F, I2, O2, E2]]
+  ): F[Socket[F, I2, O2]]
 }
 
 object Socket {

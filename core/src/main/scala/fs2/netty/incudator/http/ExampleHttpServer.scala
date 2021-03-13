@@ -53,7 +53,7 @@ object ExampleHttpServer extends IOApp {
     }
 
   private[this] val ChatRooms =
-    scala.collection.mutable.Map.empty[String, List[WebSocket[IO, Nothing]]]
+    scala.collection.mutable.Map.empty[String, List[WebSocket[IO]]]
 
   private[this] val GenericWebSocketConfig = WebSocketConfig(
     maxFramePayloadLength = 65536,

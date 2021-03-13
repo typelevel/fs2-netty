@@ -18,7 +18,7 @@ package fs2
 package netty
 
 import cats.effect.std.{Dispatcher, Queue}
-import cats.effect.{Async, Concurrent, Deferred, Poll, Sync}
+import cats.effect._
 import cats.syntax.all._
 import cats.{Applicative, Functor}
 import io.netty.buffer.ByteBuf
@@ -26,15 +26,15 @@ import io.netty.channel._
 import io.netty.handler.flow.FlowControlHandler
 import io.netty.util.ReferenceCountUtil
 
-private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
+private final class SocketHandler[F[_]: Async: Concurrent, I, O](
   disp: Dispatcher[F],
   private var channel: Channel,
   readsQueue: Queue[F, Option[Either[Throwable, I]]],
-  eventsQueue: Queue[F, E],
+  eventsQueue: Queue[F, AnyRef],
   pipelineMutationSwitch: Deferred[F, Unit]
 )(implicit inboundDecoder: Socket.Decoder[I])
     extends ChannelInboundHandlerAdapter
-    with Socket[F, I, O, E] {
+    with Socket[F, I, O] {
 
 //  override val localAddress: F[SocketAddress[IpAddress]] =
 //    Sync[F].delay(SocketAddress.fromInetSocketAddress(channel.localAddress()))
@@ -79,7 +79,7 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
       )
     }
 
-  override lazy val events: Stream[F, E] =
+  override lazy val events: Stream[F, AnyRef] =
     Stream
       .fromQueueUnterminated(eventsQueue)
       .interruptWhen(pipelineMutationSwitch.get.attempt)
@@ -119,7 +119,6 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
 
       case Right(i) =>
         // TODO: what's the perf impact of unsafeRunSync-only vs. unsafeRunAndForget-&-FlowControlHandler?
-        //  Review ordering for other ChannelHandler "callback" methods as well.
         disp.unsafeRunAndForget(readsQueue.offer(i.asRight[Exception].some))
     }
 
@@ -140,21 +139,25 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
 
   override def channelInactive(ctx: ChannelHandlerContext) =
     try {
+      //TODO: Is ordering preserved?
       disp.unsafeRunAndForget(readsQueue.offer(None))
     } catch {
       case _: IllegalStateException =>
         () // sometimes we can see this due to race conditions in shutdown
     }
 
-  override def userEventTriggered(ctx: ChannelHandlerContext, evt: Any): Unit =
-    evt match {
-      case e: E => disp.unsafeRunAndForget(eventsQueue.offer(e))
-      case _ => () // TODO: probably raise error on stream...
-    }
+  override def userEventTriggered(
+    ctx: ChannelHandlerContext,
+    evt: AnyRef
+  ): Unit =
+    //TODO: Is ordering preserved? Might indeed be best to not run this handler in a separate thread pool (unless
+    // netty manages ordering...which isn't likely as it should just hand off to ec) and call dispatcher manually
+    // where needed. This way we can keep a thread-unsafe mutable queue.
+    disp.unsafeRunAndForget(eventsQueue.offer(evt))
 
-  override def mutatePipeline[I2: Socket.Decoder, O2, E2](
+  override def mutatePipeline[I2: Socket.Decoder, O2](
     mutator: ChannelPipeline => F[Unit]
-  ): F[Socket[F, I2, O2, E2]] =
+  ): F[Socket[F, I2, O2]] =
     for {
       // TODO: Edge cases aren't fully tested
       _ <- pipelineMutationSwitch.complete(
@@ -180,7 +183,7 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
        pipeline. Maybe protocols need to inform this layer about when exactly to transition.
        */
       _ <- mutator(oldChannel.pipeline())
-      sh <- SocketHandler[F, I2, O2, E2](disp, oldChannel)
+      sh <- SocketHandler[F, I2, O2](disp, oldChannel)
       // TODO: pass a name for debugging purposes?
       _ <- Sync[F].delay(
         oldChannel.pipeline().addLast(new FlowControlHandler(false))
@@ -193,13 +196,13 @@ private final class SocketHandler[F[_]: Async: Concurrent, I, O, +E](
 
 private object SocketHandler {
 
-  def apply[F[_]: Async: Concurrent, I: Socket.Decoder, O, E](
+  def apply[F[_]: Async: Concurrent, I: Socket.Decoder, O](
     disp: Dispatcher[F],
     channel: Channel
-  ): F[SocketHandler[F, I, O, E]] =
+  ): F[SocketHandler[F, I, O]] =
     for {
       readsQueue <- Queue.unbounded[F, Option[Either[Throwable, I]]]
-      eventsQueue <- Queue.unbounded[F, E]
+      eventsQueue <- Queue.unbounded[F, AnyRef]
       pipelineMutationSwitch <- Deferred[F, Unit]
     } yield new SocketHandler(
       disp,

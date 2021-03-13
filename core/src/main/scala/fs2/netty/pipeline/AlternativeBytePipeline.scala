@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-package fs2.netty.pipeline
+package fs2
+package netty.pipeline
 
 import cats.effect.std.Dispatcher
 import cats.effect.{Async, Sync}
@@ -28,11 +29,11 @@ import io.netty.channel.{Channel, ChannelInitializer, ChannelPipeline}
 // This class and BytePipeline highlight the different way to create
 // sockets, i.e. rely on Netty handlers or encode transforms in fs2.
 class AlternativeBytePipeline[F[_]: Async](
-  byteBufPipeline: NettyPipeline[F, ByteBuf, ByteBuf, Nothing]
-) extends NettyChannelInitializer[F, Byte, Chunk[Byte], Nothing] {
+  byteBufPipeline: NettyPipeline[F, ByteBuf, ByteBuf]
+) extends NettyChannelInitializer[F, Byte, Chunk[Byte]] {
 
   override def toChannelInitializer[C <: Channel](
-    cb: Socket[F, Byte, Chunk[Byte], Nothing] => F[Unit]
+    cb: Socket[F, Byte, Chunk[Byte]] => F[Unit]
   ): F[ChannelInitializer[C]] =
     byteBufPipeline
       .toChannelInitializer { byteBufSocket =>
@@ -52,17 +53,17 @@ object AlternativeBytePipeline {
     } yield new AlternativeBytePipeline(byteBufPipeline)
 
   private class ByteBufToByteChunkSocket[F[_]: Async](
-    socket: Socket[F, ByteBuf, ByteBuf, Nothing]
-  ) extends Socket[F, Byte, Chunk[Byte], Nothing] {
+    socket: Socket[F, ByteBuf, ByteBuf]
+  ) extends Socket[F, Byte, Chunk[Byte]] {
 
-    override lazy val reads: fs2.Stream[F, Byte] =
+    override lazy val reads: Stream[F, Byte] =
       socket.reads
         .evalMap(bb =>
           Sync[F].delay(ByteBufUtil.getBytes(bb)).map(Chunk.array(_))
         )
         .flatMap(Stream.chunk)
 
-    override lazy val events: fs2.Stream[F, Nothing] = socket.events
+    override lazy val events: Stream[F, AnyRef] = socket.events
 
     override def write(output: Chunk[Byte]): F[Unit] =
       socket.write(toByteBuf(output))
@@ -78,9 +79,9 @@ object AlternativeBytePipeline {
 
     override def close(): F[Unit] = socket.close()
 
-    override def mutatePipeline[I2: Socket.Decoder, O2, E2](
+    override def mutatePipeline[I2: Socket.Decoder, O2](
       mutator: ChannelPipeline => F[Unit]
-    ): F[Socket[F, I2, O2, E2]] = socket.mutatePipeline[I2, O2, E2](mutator)
+    ): F[Socket[F, I2, O2]] = socket.mutatePipeline[I2, O2](mutator)
 
     private[this] def toByteBuf(chunk: Chunk[Byte]): ByteBuf =
       chunk match {

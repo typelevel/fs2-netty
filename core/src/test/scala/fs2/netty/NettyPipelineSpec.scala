@@ -12,6 +12,7 @@ import fs2.netty.embedded.Fs2NettyEmbeddedChannel.CommonEncoders._
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel.Encoder
 import io.netty.buffer.{ByteBuf, Unpooled}
 import io.netty.channel.ChannelHandler.Sharable
+import io.netty.channel.socket.ChannelInputShutdownReadComplete
 import io.netty.channel.{ChannelHandlerContext, ChannelInboundHandler}
 import io.netty.handler.codec.MessageToMessageDecoder
 import io.netty.handler.codec.bytes.{ByteArrayDecoder, ByteArrayEncoder}
@@ -34,7 +35,7 @@ class NettyPipelineSpec
       dispatcher =>
         for {
           pipeline <- NettyPipeline[IO](dispatcher)
-          socket <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](
+          socket <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](
             pipeline
           ).map(_._2)
 
@@ -49,11 +50,11 @@ class NettyPipelineSpec
       dispatcher =>
         for {
           pipeline <- NettyPipeline[IO](dispatcher)
-          socket <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](
+          socket <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](
             pipeline
           ).map(_._2)
 
-          events: List[Nothing] <- socket.events
+          events: List[AnyRef] <- socket.events
             .interruptAfter(1.second)
             .compile
             .toList
@@ -65,7 +66,7 @@ class NettyPipelineSpec
         for {
           // Given a socket and embedded channel from the default Netty Pipeline
           pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](pipeline)
+          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
           (channel, socket) = x
 
           // Then configs should be setup, like autoread should be false...maybe move to top test?
@@ -101,7 +102,7 @@ class NettyPipelineSpec
       dispatcher =>
         for {
           pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](pipeline)
+          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
           (channel, socket) = x
 
           encoder = implicitly[Encoder[Byte]]
@@ -127,7 +128,7 @@ class NettyPipelineSpec
       dispatcher =>
         for {
           pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](pipeline)
+          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
           (channel, socket) = x
 
           encoder = implicitly[Encoder[Byte]]
@@ -159,7 +160,7 @@ class NettyPipelineSpec
       dispatcher =>
         for {
           pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](pipeline)
+          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
           (channel, socket) = x
 
           // Netty sanity check
@@ -180,7 +181,7 @@ class NettyPipelineSpec
       dispatcher =>
         for {
           pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](pipeline)
+          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
           (channel, socket) = x
 
           _ <- socket.close()
@@ -195,7 +196,7 @@ class NettyPipelineSpec
       dispatcher =>
         for {
           pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](pipeline)
+          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
           (channel, socket) = x
 
           _ <- IO(
@@ -212,13 +213,30 @@ class NettyPipelineSpec
         } yield errMsg shouldEqual "unit test error".some
     }
 
+    "pipeline events appear in fs2-netty as events stream" in withResource {
+      dispatcher =>
+        for {
+          pipeline <- NettyPipeline[IO](dispatcher)
+          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
+          (channel, socket) = x
+
+          _ <- IO(
+            channel.underlying
+              .pipeline()
+              .fireUserEventTriggered(ChannelInputShutdownReadComplete.INSTANCE)
+          )
+
+          event <- socket.events.take(1).compile.last
+        } yield event should_=== Some(ChannelInputShutdownReadComplete.INSTANCE)
+    }
+
     "mutations" should {
       "no-op mutation creates a Socket with same behavior as original, while original Socket is unregistered from pipeline and channel" in withResource {
         dispatcher =>
           for {
             // Given a channel and socket for the default pipeline
             pipeline <- NettyPipeline[IO](dispatcher)
-            x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](
+            x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](
               pipeline
             )
             (channel, socket) = x
@@ -227,7 +245,7 @@ class NettyPipelineSpec
             _ <- socket.isDetached.map(_ should beFalse)
 
             // When performing a no-op socket pipeline mutation
-            newSocket <- socket.mutatePipeline[ByteBuf, ByteBuf, Nothing](_ =>
+            newSocket <- socket.mutatePipeline[ByteBuf, ByteBuf](_ =>
               IO.unit
             )
 
@@ -279,7 +297,7 @@ class NettyPipelineSpec
         for {
           // Given a channel and socket for the default pipeline
           pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf, Nothing](
+          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](
             pipeline
           )
           (channel, socket) = x
@@ -293,7 +311,7 @@ class NettyPipelineSpec
               }
           }
           byteSocket <- socket
-            .mutatePipeline[Array[Byte], Array[Byte], Nothing] { pipeline =>
+            .mutatePipeline[Array[Byte], Array[Byte]] { pipeline =>
               for {
                 _ <- IO(pipeline.addLast(new ByteArrayDecoder))
                 _ <- IO(pipeline.addLast(new ByteArrayEncoder))
@@ -338,11 +356,11 @@ class NettyPipelineSpec
     "custom handlers can change the types of reads and writes " in withResource {
       dispatcher =>
         for {
-          pipeline <- NettyPipeline[IO, String, String, Nothing](
+          pipeline <- NettyPipeline[IO, String, String](
             dispatcher,
             handlers = List(Eval.now(new StringDecoder))
           )
-          x <- Fs2NettyEmbeddedChannel[IO, String, String, Nothing](pipeline)
+          x <- Fs2NettyEmbeddedChannel[IO, String, String](pipeline)
           (channel, socket) = x
 
           _ <- channel.writeAllInboundThenFlushThenRunAllPendingTasks(
@@ -367,14 +385,14 @@ class NettyPipelineSpec
     "non sharable handlers must be always evaluated per channel" in withResource {
       dispatcher =>
         for {
-          pipeline <- NettyPipeline[IO, String, String, Nothing](
+          pipeline <- NettyPipeline[IO, String, String](
             dispatcher,
             handlers =
               List(Eval.always(new StatefulMessageToReadCountChannelHandler))
           )
-          x <- Fs2NettyEmbeddedChannel[IO, String, String, Nothing](pipeline)
+          x <- Fs2NettyEmbeddedChannel[IO, String, String](pipeline)
           (channelOne, socketOne) = x
-          y <- Fs2NettyEmbeddedChannel[IO, String, String, Nothing](pipeline)
+          y <- Fs2NettyEmbeddedChannel[IO, String, String](pipeline)
           (channelTwo, socketTwo) = y
 
           inputs = List("a", "b", "c")
@@ -397,7 +415,7 @@ class NettyPipelineSpec
     "sharable handlers are memoized per channel regardless of the eval policy" in withResource {
       dispatcher =>
         for {
-          pipeline <- NettyPipeline[IO, String, String, Nothing](
+          pipeline <- NettyPipeline[IO, String, String](
             dispatcher,
             handlers = List(
               Eval.always(
@@ -411,9 +429,9 @@ class NettyPipelineSpec
               )
             )
           )
-          x <- Fs2NettyEmbeddedChannel[IO, String, String, Nothing](pipeline)
+          x <- Fs2NettyEmbeddedChannel[IO, String, String](pipeline)
           (channelOne, socketOne) = x
-          y <- Fs2NettyEmbeddedChannel[IO, String, String, Nothing](pipeline)
+          y <- Fs2NettyEmbeddedChannel[IO, String, String](pipeline)
           (channelTwo, socketTwo) = y
 
           inputs = List("a", "b", "c")
