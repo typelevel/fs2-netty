@@ -15,7 +15,7 @@
  */
 
 package fs2
-package netty
+package netty.pipeline.socket
 
 import cats.arrow.Profunctor
 import cats.syntax.all._

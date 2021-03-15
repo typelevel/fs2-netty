@@ -16,8 +16,9 @@
 
 package fs2.netty
 
-import io.netty.channel.{Channel, ChannelInitializer}
+import fs2.netty.pipeline.socket.Socket
 import io.netty.channel.socket.SocketChannel
+import io.netty.channel.{Channel, ChannelInitializer}
 
 trait NettyChannelInitializer[F[_], O, I] {
 

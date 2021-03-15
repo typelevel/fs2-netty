@@ -16,7 +16,7 @@
 
 package fs2.netty.incudator.http
 
-import fs2.netty.Socket
+import fs2.netty.pipeline.socket.Socket
 import fs2.{INothing, Pipe, Stream}
 import io.netty.channel.ChannelPipeline
 import io.netty.handler.codec.http.websocketx.WebSocketFrame

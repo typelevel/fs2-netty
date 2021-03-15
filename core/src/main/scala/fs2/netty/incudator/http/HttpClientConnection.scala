@@ -21,8 +21,8 @@ import cats.data.Kleisli
 import cats.effect.Sync
 import cats.syntax.all._
 import fs2.Stream
-import fs2.netty.Socket
 import fs2.netty.incudator.http.HttpClientConnection._
+import fs2.netty.pipeline.socket.Socket
 import io.netty.buffer.Unpooled
 import io.netty.channel.{ChannelHandlerContext, ChannelPipeline}
 import io.netty.handler.codec.TooLongFrameException
@@ -31,9 +31,6 @@ import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler.Han
 import io.netty.handler.codec.http.websocketx.{WebSocketFrame, WebSocketServerProtocolHandler}
 
 // TODO: this is just a fancy function over Socket, so maybe just make this an object and a function?
-// U could be io.netty.handler.timeout.IdleStateEvent if we wanted to handle connection closure, but in this
-// context we want to close the channel anyway and just be notified why it was closed. However, we should likely
-// send HttpResponseStatus.REQUEST_TIMEOUT for cleaner close. So change U type and handle at FS2 layer.
 class HttpClientConnection[F[_]: Sync](
   clientSocket: Socket[
     F,
@@ -41,6 +38,12 @@ class HttpClientConnection[F[_]: Sync](
     FullHttpRequest
   ]
 ) {
+
+  // TODO: Add idle state handler and handle io.netty.handler.timeout.IdleStateEvent from read side with
+  //  HttpResponseStatus.REQUEST_TIMEOUT for a clean close in case of race condition where client is in the process of
+  //  sending a request. However, need to track weather a request is inFlight, so as not to close connection just
+  //  because server is taking long to respond, triggering a Idle Event from read side. Client is just waiting so it
+  //  cannot send another request.
 
   def successfullyDecodedReads(
     httpRouter: Kleisli[F, FullHttpRequest, FullHttpResponse],

@@ -18,9 +18,10 @@ package fs2.netty.incudator.http
 
 import cats.data.NonEmptyList
 import cats.effect.{Async, Resource}
-import fs2.Stream
 import cats.syntax.all._
-import fs2.netty.{Network, Socket}
+import fs2.Stream
+import fs2.netty.Network
+import fs2.netty.pipeline.socket.Socket
 import io.netty.handler.codec.http._
 import io.netty.handler.timeout.ReadTimeoutHandler
 
@@ -28,7 +29,8 @@ import scala.concurrent.duration.FiniteDuration
 
 object HttpServer {
 
-  implicit val decoder =  new Socket.Decoder[FullHttpRequest] {
+  implicit val decoder = new Socket.Decoder[FullHttpRequest] {
+
     override def decode(x: AnyRef): Either[String, FullHttpRequest] = x match {
       case req: FullHttpRequest => req.asRight[String]
       case _ => "non http message, pipeline error".asLeft[FullHttpRequest]

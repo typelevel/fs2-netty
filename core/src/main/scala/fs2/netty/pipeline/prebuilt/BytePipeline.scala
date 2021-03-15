@@ -14,15 +14,17 @@
  * limitations under the License.
  */
 
-package fs2
-package netty.pipeline
+package fs2.netty.pipeline.prebuilt
 
 import cats.Eval
 import cats.effect.std.Dispatcher
 import cats.effect.{Async, Sync}
 import cats.syntax.all._
-import fs2.netty.pipeline.BytePipeline._
-import fs2.netty.{NettyChannelInitializer, NettyPipeline, Socket}
+import fs2.netty.pipeline.NettyPipeline
+import fs2.netty.pipeline.prebuilt.BytePipeline._
+import fs2.netty.NettyChannelInitializer
+import fs2.netty.pipeline.socket.Socket
+import fs2.{Chunk, INothing, Pipe, Stream}
 import io.netty.buffer.{ByteBuf, Unpooled}
 import io.netty.channel.{Channel, ChannelInitializer, ChannelPipeline}
 import io.netty.handler.codec.bytes.ByteArrayDecoder

@@ -18,13 +18,14 @@ package fs2
 package netty
 
 import cats.data.NonEmptyList
-import cats.effect.{Async, Concurrent, Resource, Sync}
 import cats.effect.std.{Dispatcher, Queue}
+import cats.effect.{Async, Concurrent, Resource, Sync}
 import cats.syntax.all._
 import com.comcast.ip4s.{Host, IpAddress, Port, SocketAddress}
+import fs2.netty.pipeline.socket.{Socket, SocketHandler}
 import io.netty.bootstrap.{Bootstrap, ServerBootstrap}
-import io.netty.channel.{Channel, ChannelHandler, ChannelInitializer, EventLoopGroup, ServerChannel, ChannelOption => JChannelOption}
 import io.netty.channel.socket.SocketChannel
+import io.netty.channel.{Channel, ChannelHandler, ChannelInitializer, EventLoopGroup, ServerChannel, ChannelOption => JChannelOption}
 
 import java.net.InetSocketAddress
 import java.util.concurrent.ThreadFactory
@@ -32,34 +33,44 @@ import java.util.concurrent.atomic.AtomicInteger
 
 // TODO: Do we need to distinguish between TCP (connection based network) and UDP (connection-less network)?
 final class Network[F[_]: Async] private (
-    parent: EventLoopGroup, // TODO: custom value class?
-    child: EventLoopGroup,
-    clientChannelClazz: Class[_ <: Channel],
-    serverChannelClazz: Class[_ <: ServerChannel]) {
+  parent: EventLoopGroup, // TODO: custom value class?
+  child: EventLoopGroup,
+  clientChannelClazz: Class[_ <: Channel],
+  serverChannelClazz: Class[_ <: ServerChannel]
+) {
 
   def client(
-      addr: SocketAddress[Host],
-      options: List[ChannelOption] = Nil)
-      : Resource[F, Socket[F, Byte, Byte]] =
+    addr: SocketAddress[Host],
+    options: List[ChannelOption] = Nil
+  ): Resource[F, Socket[F, Byte, Byte]] =
     Dispatcher[F] flatMap { disp =>
       Resource suspend {
         Concurrent[F].deferred[Socket[F, Byte, Byte]] flatMap { d =>
           addr.host.resolve[F] flatMap { resolved =>
             Sync[F] delay {
               val bootstrap = new Bootstrap
-              bootstrap.group(child)
+              bootstrap
+                .group(child)
                 .channel(clientChannelClazz)
-                .option(JChannelOption.AUTO_READ.asInstanceOf[JChannelOption[Any]], false)   // backpressure
+                .option(
+                  JChannelOption.AUTO_READ.asInstanceOf[JChannelOption[Any]],
+                  false
+                ) // backpressure
                 .handler(initializer(disp)(d.complete(_).void))
 
               options.foreach(opt => bootstrap.option(opt.key, opt.value))
 
               val connectChannel = Sync[F] defer {
-                val cf = bootstrap.connect(resolved.toInetAddress, addr.port.value)
+                val cf =
+                  bootstrap.connect(resolved.toInetAddress, addr.port.value)
                 fromNettyFuture[F](cf.pure[F]).as(cf.channel())
               }
 
-              Resource.make(connectChannel <* d.get)(ch => fromNettyFuture(Sync[F].delay(ch.close())).void).evalMap(_ => d.get)
+              Resource
+                .make(connectChannel <* d.get)(ch =>
+                  fromNettyFuture(Sync[F].delay(ch.close())).void
+                )
+                .evalMap(_ => d.get)
             }
           }
         }
@@ -68,27 +79,29 @@ final class Network[F[_]: Async] private (
 
   //TODO: Add back default args for opts, removed to fix compilation error for overloaded method
   def server(
-      host: Option[Host],
-      port: Port,
-      options: List[ChannelOption])
-      : Stream[F, Socket[F, Byte, Byte]] =
+    host: Option[Host],
+    port: Port,
+    options: List[ChannelOption]
+  ): Stream[F, Socket[F, Byte, Byte]] =
     Stream.resource(serverResource(host, Some(port), options)).flatMap(_._2)
 
   // TODO: maybe here it's nicer to have the I first then O?, or will that be confusing if Socket has reversed order?
   def server[O, I: Socket.Decoder](
-      host: Option[Host],
-      port: Port,
-      handlers: NonEmptyList[ChannelHandler],
-      options: List[ChannelOption])
-      : Stream[F, Socket[F, O, I]] =
-    Stream.resource(serverResource[O, I](host, Some(port),handlers,  options)).flatMap(_._2)
+    host: Option[Host],
+    port: Port,
+    handlers: NonEmptyList[ChannelHandler],
+    options: List[ChannelOption]
+  ): Stream[F, Socket[F, O, I]] =
+    Stream
+      .resource(serverResource[O, I](host, Some(port), handlers, options))
+      .flatMap(_._2)
 
   def serverResource(
-      host: Option[Host],
-      port: Option[Port],
-      options: List[ChannelOption])
-      : Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, Byte, Byte]])] =
-    serverResource(host, port, handlers = Nil,options)
+    host: Option[Host],
+    port: Option[Port],
+    options: List[ChannelOption]
+  ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, Byte, Byte]])] =
+    serverResource(host, port, handlers = Nil, options)
 
   def serverResource[O, I: Socket.Decoder](
     host: Option[Host],
@@ -175,16 +188,15 @@ final class Network[F[_]: Async] private (
       }
     } yield res
 
-
-  implicit val decoder: Socket.Decoder[Byte] =  new Socket.Decoder[Byte] {
+  implicit val decoder: Socket.Decoder[Byte] = new Socket.Decoder[Byte] {
     override def decode(x: AnyRef): Either[String, Byte] = ???
   }
 
-  private[this] def initializer(
-      disp: Dispatcher[F])(
-      result: Socket[F, Byte, Byte] => F[Unit])
-      : ChannelInitializer[SocketChannel] =
+  private[this] def initializer(disp: Dispatcher[F])(
+    result: Socket[F, Byte, Byte] => F[Unit]
+  ): ChannelInitializer[SocketChannel] =
     new ChannelInitializer[SocketChannel] {
+
       def initChannel(ch: SocketChannel) = {
         val p = ch.pipeline()
         ch.config().setAutoRead(false)
@@ -203,23 +215,33 @@ object Network {
   private[this] val (eventLoopClazz, serverChannelClazz, clientChannelClazz) = {
     val (e, s, c) = uring().orElse(epoll()).orElse(kqueue()).getOrElse(nio())
 
-    (e, s.asInstanceOf[Class[_ <: ServerChannel]], c.asInstanceOf[Class[_ <: Channel]])
+    (
+      e,
+      s.asInstanceOf[Class[_ <: ServerChannel]],
+      c.asInstanceOf[Class[_ <: Channel]]
+    )
   }
 
   def apply[F[_]: Async]: Resource[F, Network[F]] = {
     // TODO configure threads
     def instantiate(name: String) = Sync[F] delay {
-      val constr = eventLoopClazz.getDeclaredConstructor(classOf[Int], classOf[ThreadFactory])
-      val result = constr.newInstance(new Integer(1), new ThreadFactory {
-        private val ctr = new AtomicInteger(0)
-        def newThread(r: Runnable): Thread = {
-          val t = new Thread(r)
-          t.setDaemon(true)
-          t.setName(s"fs2-netty-$name-io-worker-${ctr.getAndIncrement()}")
-          t.setPriority(Thread.MAX_PRIORITY)
-          t
+      val constr = eventLoopClazz.getDeclaredConstructor(
+        classOf[Int],
+        classOf[ThreadFactory]
+      )
+      val result = constr.newInstance(
+        new Integer(1),
+        new ThreadFactory {
+          private val ctr = new AtomicInteger(0)
+          def newThread(r: Runnable): Thread = {
+            val t = new Thread(r)
+            t.setDaemon(true)
+            t.setName(s"fs2-netty-$name-io-worker-${ctr.getAndIncrement()}")
+            t.setPriority(Thread.MAX_PRIORITY)
+            t
+          }
         }
-      })
+      )
 
       result.asInstanceOf[EventLoopGroup]
     }
@@ -232,7 +254,10 @@ object Network {
     (instantiateR("server"), instantiateR("client")) mapN { (server, client) =>
       try {
         val meth = eventLoopClazz.getDeclaredMethod("setIoRatio", classOf[Int])
-        meth.invoke(server, new Integer(90))    // TODO tweak this a bit more; 100 was worse than 50 and 90 was a dramatic step up from both
+        meth.invoke(
+          server,
+          new Integer(90)
+        ) // TODO tweak this a bit more; 100 was worse than 50 and 90 was a dramatic step up from both
         meth.invoke(client, new Integer(90))
       } catch {
         case _: Exception => ()
@@ -244,13 +269,27 @@ object Network {
 
   private[this] def uring() =
     try {
-      if (sys.props.get("fs2.netty.use.io_uring").map(_.toBoolean).getOrElse(false)) {
+      if (
+        sys.props
+          .get("fs2.netty.use.io_uring")
+          .map(_.toBoolean)
+          .getOrElse(false)
+      ) {
         Class.forName("io.netty.incubator.channel.uring.IOUringEventLoop")
 
-        Some((
-          Class.forName("io.netty.incubator.channel.uring.IOUringEventLoopGroup"),
-          Class.forName("io.netty.incubator.channel.uring.IOUringServerSocketChannel"),
-          Class.forName("io.netty.incubator.channel.uring.IOUringSocketChannel")))
+        Some(
+          (
+            Class.forName(
+              "io.netty.incubator.channel.uring.IOUringEventLoopGroup"
+            ),
+            Class.forName(
+              "io.netty.incubator.channel.uring.IOUringServerSocketChannel"
+            ),
+            Class.forName(
+              "io.netty.incubator.channel.uring.IOUringSocketChannel"
+            )
+          )
+        )
       } else {
         None
       }
@@ -262,10 +301,13 @@ object Network {
     try {
       Class.forName("io.netty.channel.epoll.EpollEventLoop")
 
-      Some((
-        Class.forName("io.netty.channel.epoll.EpollEventLoopGroup"),
-        Class.forName("io.netty.channel.epoll.EpollServerSocketChannel"),
-        Class.forName("io.netty.channel.epoll.EpollSocketChannel")))
+      Some(
+        (
+          Class.forName("io.netty.channel.epoll.EpollEventLoopGroup"),
+          Class.forName("io.netty.channel.epoll.EpollServerSocketChannel"),
+          Class.forName("io.netty.channel.epoll.EpollSocketChannel")
+        )
+      )
     } catch {
       case _: Throwable => None
     }
@@ -274,10 +316,13 @@ object Network {
     try {
       Class.forName("io.netty.channel.kqueue.KQueueEventLoop")
 
-      Some((
-        Class.forName("io.netty.channel.kqueue.KQueueEventLoopGroup"),
-        Class.forName("io.netty.channel.kqueue.KQueueServerSocketChannel"),
-        Class.forName("io.netty.channel.kqueue.KQueueSocketChannel")))
+      Some(
+        (
+          Class.forName("io.netty.channel.kqueue.KQueueEventLoopGroup"),
+          Class.forName("io.netty.channel.kqueue.KQueueServerSocketChannel"),
+          Class.forName("io.netty.channel.kqueue.KQueueSocketChannel")
+        )
+      )
     } catch {
       case _: Throwable => None
     }
@@ -286,5 +331,6 @@ object Network {
     (
       Class.forName("io.netty.channel.nio.NioEventLoopGroup"),
       Class.forName("io.netty.channel.socket.nio.NioServerSocketChannel"),
-      Class.forName("io.netty.channel.socket.nio.NioSocketChannel"))
+      Class.forName("io.netty.channel.socket.nio.NioSocketChannel")
+    )
 }

@@ -20,7 +20,8 @@ package netty.embedded
 import cats.effect.{Async, Sync}
 import cats.implicits._
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel.Encoder
-import fs2.netty.{NettyChannelInitializer, Socket}
+import fs2.netty.NettyChannelInitializer
+import fs2.netty.pipeline.socket.Socket
 import io.netty.buffer.{ByteBuf, Unpooled}
 import io.netty.channel.embedded.EmbeddedChannel
 

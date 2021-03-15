@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package fs2.netty
+package fs2.netty.pipeline.socket
 
 import io.netty.buffer.ByteBufAllocator
 import io.netty.channel._

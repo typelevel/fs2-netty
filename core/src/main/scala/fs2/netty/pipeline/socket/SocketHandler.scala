@@ -15,18 +15,19 @@
  */
 
 package fs2
-package netty
+package netty.pipeline.socket
 
-import cats.effect.std.{Dispatcher, Queue}
 import cats.effect._
+import cats.effect.std.{Dispatcher, Queue}
 import cats.syntax.all._
 import cats.{Applicative, Functor}
+import fs2.netty.fromNettyFuture
 import io.netty.buffer.ByteBuf
 import io.netty.channel._
 import io.netty.handler.flow.FlowControlHandler
 import io.netty.util.ReferenceCountUtil
 
-private final class SocketHandler[F[_]: Async: Concurrent, O, I](
+final class SocketHandler[F[_]: Async: Concurrent, O, I] private(
   disp: Dispatcher[F],
   private var channel: Channel,
   readsQueue: Queue[F, Option[Either[Throwable, I]]],
@@ -155,7 +156,7 @@ private final class SocketHandler[F[_]: Async: Concurrent, O, I](
     // where needed. This way we can keep a thread-unsafe mutable queue.
     disp.unsafeRunAndForget(eventsQueue.offer(evt))
 
-  override def mutatePipeline[O2,I2: Socket.Decoder](
+  override def mutatePipeline[O2, I2: Socket.Decoder](
     mutator: ChannelPipeline => F[Unit]
   ): F[Socket[F, O2, I2]] =
     for {
@@ -194,7 +195,7 @@ private final class SocketHandler[F[_]: Async: Concurrent, O, I](
   // not to self: if we want to schedule an action to be done when channel is closed, can also do `ctx.channel.closeFuture.addListener`
 }
 
-private object SocketHandler {
+object SocketHandler {
 
   def apply[F[_]: Async: Concurrent, O, I: Socket.Decoder](
     disp: Dispatcher[F],

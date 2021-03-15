@@ -1,15 +1,16 @@
-package fs2
-package netty
+package fs2.netty.pipeline
 
 import cats.Eval
 import cats.effect.std.Dispatcher
 import cats.effect.testing.specs2.CatsResource
 import cats.effect.{IO, Resource}
 import cats.syntax.all._
-import fs2.netty.NettyPipelineSpec.{SharableStatefulByteBufToReadCountChannelHandler, SharableStatefulStringToReadCountChannelHandler, StatefulMessageToReadCountChannelHandler}
+import fs2.Stream
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel.CommonEncoders._
 import fs2.netty.embedded.Fs2NettyEmbeddedChannel.Encoder
+import fs2.netty.pipeline.NettyPipelineSpec._
+import fs2.netty.pipeline.socket.Socket
 import io.netty.buffer.{ByteBuf, Unpooled}
 import io.netty.channel.ChannelHandler.Sharable
 import io.netty.channel.socket.ChannelInputShutdownReadComplete
@@ -245,9 +246,7 @@ class NettyPipelineSpec
             _ <- socket.isDetached.map(_ should beFalse)
 
             // When performing a no-op socket pipeline mutation
-            newSocket <- socket.mutatePipeline[ByteBuf, ByteBuf](_ =>
-              IO.unit
-            )
+            newSocket <- socket.mutatePipeline[ByteBuf, ByteBuf](_ => IO.unit)
 
             // Then new socket should be able to receive and write ByteBuf's
             encoder = implicitly[Encoder[Byte]]

@@ -1,4 +1,4 @@
-package fs2.netty.pipeline
+package fs2.netty.pipeline.prebuilt
 
 import cats.effect.std.Dispatcher
 import cats.effect.testing.specs2.CatsResource

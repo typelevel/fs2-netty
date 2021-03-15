@@ -14,12 +14,14 @@
  * limitations under the License.
  */
 
-package fs2.netty
+package fs2.netty.pipeline
 
 import cats.Eval
 import cats.effect.std.Dispatcher
 import cats.effect.{Async, Sync}
 import cats.syntax.all._
+import fs2.netty.NettyChannelInitializer
+import fs2.netty.pipeline.socket.{Socket, SocketHandler}
 import io.netty.buffer.ByteBuf
 import io.netty.channel.{Channel, ChannelHandler, ChannelHandlerAdapter, ChannelInitializer}
 import io.netty.handler.flow.FlowControlHandler
