@@ -27,7 +27,7 @@ import io.netty.channel._
 import io.netty.handler.flow.FlowControlHandler
 import io.netty.util.ReferenceCountUtil
 
-final class SocketHandler[F[_]: Async: Concurrent, O, I] private(
+final class SocketHandler[F[_]: Async: Concurrent, O, I] private (
   disp: Dispatcher[F],
   private var channel: Channel,
   readsQueue: Queue[F, Option[Either[Throwable, I]]],
@@ -87,7 +87,7 @@ final class SocketHandler[F[_]: Async: Concurrent, O, I] private(
 
   override def write(output: O): F[Unit] =
     fromNettyFuture[F](
-      /* Sync[F].delay(println(debug(output))) *> */ Sync[F].delay(
+      /*Sync[F].delay(println(s"Write ${debug(output)}")) *>*/ Sync[F].delay(
         channel.writeAndFlush(output)
       )
     ).void
@@ -120,6 +120,7 @@ final class SocketHandler[F[_]: Async: Concurrent, O, I] private(
 
       case Right(i) =>
         // TODO: what's the perf impact of unsafeRunSync-only vs. unsafeRunAndForget-&-FlowControlHandler?
+//        println(s"READ ${debug(msg)}")
         disp.unsafeRunAndForget(readsQueue.offer(i.asRight[Exception].some))
     }
 
@@ -132,7 +133,7 @@ final class SocketHandler[F[_]: Async: Concurrent, O, I] private(
       new String(arr)
 
     case _ =>
-      ""
+      "blah"
   }
 
   override def exceptionCaught(ctx: ChannelHandlerContext, t: Throwable) =

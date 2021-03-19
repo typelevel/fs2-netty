@@ -17,15 +17,15 @@
 package fs2
 package netty
 
-import cats.data.NonEmptyList
 import cats.effect.std.{Dispatcher, Queue}
 import cats.effect.{Async, Concurrent, Resource, Sync}
 import cats.syntax.all._
 import com.comcast.ip4s.{Host, IpAddress, Port, SocketAddress}
-import fs2.netty.pipeline.socket.{Socket, SocketHandler}
+import fs2.netty.pipeline.NettyPipeline
+import fs2.netty.pipeline.socket.Socket
 import io.netty.bootstrap.{Bootstrap, ServerBootstrap}
-import io.netty.channel.socket.SocketChannel
-import io.netty.channel.{Channel, ChannelHandler, ChannelInitializer, EventLoopGroup, ServerChannel, ChannelOption => JChannelOption}
+import io.netty.buffer.ByteBuf
+import io.netty.channel.{Channel, EventLoopGroup, ServerChannel, ChannelOption => JChannelOption}
 
 import java.net.InetSocketAddress
 import java.util.concurrent.ThreadFactory
@@ -41,40 +41,57 @@ final class Network[F[_]: Async] private (
 
   def client(
     addr: SocketAddress[Host],
-    options: List[ChannelOption] = Nil
-  ): Resource[F, Socket[F, Byte, Byte]] =
-    Dispatcher[F] flatMap { disp =>
-      Resource suspend {
-        Concurrent[F].deferred[Socket[F, Byte, Byte]] flatMap { d =>
-          addr.host.resolve[F] flatMap { resolved =>
-            Sync[F] delay {
-              val bootstrap = new Bootstrap
-              bootstrap
-                .group(child)
-                .channel(clientChannelClazz)
-                .option(
-                  JChannelOption.AUTO_READ.asInstanceOf[JChannelOption[Any]],
-                  false
-                ) // backpressure
-                .handler(initializer(disp)(d.complete(_).void))
+    options: List[ChannelOption]
+  ): Resource[F, Socket[F, ByteBuf, ByteBuf]] =
+    for {
+      disp <- Dispatcher[F]
+      pipeline <- Resource.eval(NettyPipeline(disp))
+      c <- client(addr, pipeline, options)
+    } yield c
 
-              options.foreach(opt => bootstrap.option(opt.key, opt.value))
+  def client[O, I](
+    addr: SocketAddress[Host],
+    pipelineInitializer: NettyChannelInitializer[F, O, I],
+    options: List[ChannelOption]
+  ): Resource[F, Socket[F, O, I]] =
+    Resource.suspend {
+      for {
+        futureSocket <- Concurrent[F].deferred[Socket[F, O, I]]
 
-              val connectChannel = Sync[F] defer {
-                val cf =
-                  bootstrap.connect(resolved.toInetAddress, addr.port.value)
-                fromNettyFuture[F](cf.pure[F]).as(cf.channel())
-              }
+        initializer <- pipelineInitializer.toSocketChannelInitializer(
+          futureSocket.complete(_).void
+        )
 
-              Resource
-                .make(connectChannel <* d.get)(ch =>
-                  fromNettyFuture(Sync[F].delay(ch.close())).void
-                )
-                .evalMap(_ => d.get)
-            }
-          }
+        resolvedHost <- addr.host.resolve[F]
+
+        bootstrap <- Sync[F].delay {
+          val bootstrap = new Bootstrap
+          bootstrap
+            .group(child)
+            .channel(clientChannelClazz)
+            .option(
+              JChannelOption.AUTO_READ.asInstanceOf[JChannelOption[Any]],
+              false
+            ) // backpressure TODO: backpressure creating the connection or is this reads?
+            .handler(initializer)
+
+          options.foreach(opt => bootstrap.option(opt.key, opt.value))
+          bootstrap
         }
-      }
+
+        // TODO: Log properly as info, debug, or trace. Or send as an event to another stream. Maybe the whole network could have an event stream.
+        _ <- Sync[F].delay(println(bootstrap.config()))
+
+        connectChannel = Sync[F] defer {
+          val cf =
+            bootstrap.connect(resolvedHost.toInetAddress, addr.port.value)
+          fromNettyFuture[F](cf.pure[F]).as(cf.channel())
+        }
+      } yield Resource
+        .make(connectChannel <* futureSocket.get)(ch =>
+          fromNettyFuture(Sync[F].delay(ch.close())).void
+        )
+        .evalMap(_ => futureSocket.get)
     }
 
   //TODO: Add back default args for opts, removed to fix compilation error for overloaded method
@@ -82,132 +99,101 @@ final class Network[F[_]: Async] private (
     host: Option[Host],
     port: Port,
     options: List[ChannelOption]
-  ): Stream[F, Socket[F, Byte, Byte]] =
+  ): Stream[F, Socket[F, ByteBuf, ByteBuf]] =
     Stream.resource(serverResource(host, Some(port), options)).flatMap(_._2)
 
   // TODO: maybe here it's nicer to have the I first then O?, or will that be confusing if Socket has reversed order?
   def server[O, I: Socket.Decoder](
     host: Option[Host],
     port: Port,
-    handlers: NonEmptyList[ChannelHandler],
+    pipelineInitializer: NettyChannelInitializer[F, O, I],
     options: List[ChannelOption]
   ): Stream[F, Socket[F, O, I]] =
     Stream
-      .resource(serverResource[O, I](host, Some(port), handlers, options))
+      .resource(
+        serverResource[O, I](host, Some(port), pipelineInitializer, options)
+      )
       .flatMap(_._2)
 
   def serverResource(
     host: Option[Host],
     port: Option[Port],
     options: List[ChannelOption]
-  ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, Byte, Byte]])] =
-    serverResource(host, port, handlers = Nil, options)
+  ): Resource[
+    F,
+    (SocketAddress[IpAddress], Stream[F, Socket[F, ByteBuf, ByteBuf]])
+  ] =
+    for {
+      dispatcher <- Dispatcher[F]
+      pipeline <- Resource.eval(NettyPipeline[F](dispatcher))
+      sr <- serverResource(host, port, pipeline, options)
+    } yield sr
 
   def serverResource[O, I: Socket.Decoder](
     host: Option[Host],
     port: Option[Port],
-    handlers: NonEmptyList[ChannelHandler],
+    pipelineInitializer: NettyChannelInitializer[F, O, I],
     options: List[ChannelOption]
   ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, O, I]])] =
-    serverResource(host, port, handlers.toList, options)
+    Resource suspend {
+      for {
+        clientConnections <- Queue.unbounded[F, Socket[F, O, I]]
 
-  private def serverResource[O, I: Socket.Decoder](
-    host: Option[Host],
-    port: Option[Port],
-    handlers: List[ChannelHandler],
-    options: List[ChannelOption]
-  ): Resource[F, (SocketAddress[IpAddress], Stream[F, Socket[F, O, I]])] =
-    for {
-      dispatcher <- Dispatcher[F]
+        resolvedHost <- host.traverse(_.resolve[F])
 
-      res <- Resource suspend {
-        for {
-          clientConnections <- Queue.unbounded[F, Socket[F, O, I]]
+        socketInitializer <- pipelineInitializer.toSocketChannelInitializer(
+          clientConnections.offer
+        )
 
-          resolvedHost <- host.traverse(_.resolve[F])
+        bootstrap <- Sync[F] delay {
+          val bootstrap = new ServerBootstrap
+          bootstrap
+            .group(parent, child)
+            .option(
+              JChannelOption.AUTO_READ.asInstanceOf[JChannelOption[Any]],
+              false
+            ) // backpressure for accepting connections, not reads on any individual connection
+            //.childOption() TODO: Any useful ones?
+            .channel(serverChannelClazz)
+            .childHandler(socketInitializer)
 
-          bootstrap <- Sync[F] delay {
-            val bootstrap = new ServerBootstrap
-            bootstrap
-              .group(parent, child)
-              .option(
-                JChannelOption.AUTO_READ.asInstanceOf[JChannelOption[Any]],
-                false
-              ) // backpressure for accepting connections, not reads on any individual connection
-              //.childOption() TODO: Any useful ones?
-              .channel(serverChannelClazz)
-              .childHandler(new ChannelInitializer[SocketChannel] {
-                override def initChannel(ch: SocketChannel): Unit = {
-                  val p = ch.pipeline()
-                  ch.config().setAutoRead(false)
+          options.foreach(opt => bootstrap.option(opt.key, opt.value))
+          bootstrap
+        }
 
-                  handlers.foldLeft(p)((pipeline, handler) =>
-                    pipeline.addLast(handler)
-                  )
-                  // TODO: read up on CE3 Dispatcher, how is it different than Context Switch? Is this taking place async?
-                  dispatcher.unsafeRunAndForget {
-                    SocketHandler[F, O, I](dispatcher, ch)
-                      .flatTap(h => Sync[F].delay(p.addLast(h)))
-                      .flatMap(clientConnections.offer)
-                  }
-                }
-              })
+        // TODO: Log properly as info, debug, or trace. Also can print localAddress
+        _ <- Sync[F].delay(println(bootstrap.config()))
 
-            options.foreach(opt => bootstrap.option(opt.key, opt.value))
-            bootstrap
-          }
-
-          // TODO: Log properly as info, debug, or trace
-          _ <- Sync[F].delay(println(bootstrap.config()))
-
-          // TODO: is the right name? Bind uses the parent ELG that calla TCP accept which yields a connection to child ELG?
-          tcpAcceptChannel = Sync[F] defer {
-            val cf = bootstrap.bind(
-              resolvedHost.map(_.toInetAddress).orNull,
-              port.map(_.value).getOrElse(0)
+        // TODO: is the right name? Bind uses the parent ELG that calla TCP accept which yields a connection to child ELG?
+        tcpAcceptChannel = Sync[F] defer {
+          val cf = bootstrap.bind(
+            resolvedHost.map(_.toInetAddress).orNull,
+            port.map(_.value).getOrElse(0)
+          )
+          fromNettyFuture[F](cf.pure[F]).as(cf.channel())
+        }
+      } yield Resource
+        .make(tcpAcceptChannel) { ch =>
+          fromNettyFuture[F](Sync[F].delay(ch.close())).void
+        }
+        .evalMap { ch =>
+          Sync[F]
+            .delay(
+              SocketAddress.fromInetSocketAddress(
+                ch.localAddress().asInstanceOf[InetSocketAddress]
+              )
             )
-            fromNettyFuture[F](cf.pure[F]).as(cf.channel())
-          }
-        } yield Resource
-          .make(tcpAcceptChannel) { ch =>
-            fromNettyFuture[F](Sync[F].delay(ch.close())).void
-          }
-          .evalMap { ch =>
-            Sync[F]
-              .delay(
-                SocketAddress.fromInetSocketAddress(
-                  ch.localAddress().asInstanceOf[InetSocketAddress]
-                )
+            .tupleRight(
+              Stream.repeatEval(
+                Sync[F].delay(ch.read()) *> clientConnections.take
               )
-              .tupleRight(
-                Stream.repeatEval(
-                  Sync[F].delay(ch.read()) *> clientConnections.take
-                )
-              )
-          }
-      }
-    } yield res
+            )
+        }
+    }
 
   implicit val decoder: Socket.Decoder[Byte] = new Socket.Decoder[Byte] {
     override def decode(x: AnyRef): Either[String, Byte] = ???
   }
-
-  private[this] def initializer(disp: Dispatcher[F])(
-    result: Socket[F, Byte, Byte] => F[Unit]
-  ): ChannelInitializer[SocketChannel] =
-    new ChannelInitializer[SocketChannel] {
-
-      def initChannel(ch: SocketChannel) = {
-        val p = ch.pipeline()
-        ch.config().setAutoRead(false)
-
-        disp unsafeRunAndForget {
-          SocketHandler[F, Byte, Byte](disp, ch) flatMap { s =>
-            Sync[F].delay(p.addLast(s)) *> result(s)
-          }
-        }
-      }
-    }
 }
 
 object Network {

@@ -16,11 +16,13 @@
 
 package fs2.netty.incudator.http
 
-import cats.data.NonEmptyList
+import cats.Eval
+import cats.effect.std.Dispatcher
 import cats.effect.{Async, Resource}
 import cats.syntax.all._
 import fs2.Stream
 import fs2.netty.Network
+import fs2.netty.pipeline.NettyPipeline
 import fs2.netty.pipeline.socket.Socket
 import io.netty.handler.codec.http._
 import io.netty.handler.timeout.ReadTimeoutHandler
@@ -43,26 +45,42 @@ object HttpServer {
     for {
       network <- Network[F]
 
-      rawHttpClientConnection <- network
-        .serverResource[FullHttpResponse, FullHttpRequest](
-          host = None,
-          port = None,
-          handlers = NonEmptyList.of(
-            new HttpServerCodec(
-              httpConfigs.parsing.maxInitialLineLength,
-              httpConfigs.parsing.maxHeaderSize,
-              httpConfigs.parsing.maxChunkSize
+      dispatcher <- Dispatcher[F]
+
+      pipeline <- Resource.eval(
+        NettyPipeline[F, FullHttpResponse, FullHttpRequest](
+          dispatcher,
+          List(
+            Eval.always(
+              new HttpServerCodec(
+                httpConfigs.parsing.maxInitialLineLength,
+                httpConfigs.parsing.maxHeaderSize,
+                httpConfigs.parsing.maxChunkSize
+              )
             ),
-            new HttpServerKeepAliveHandler,
-            new HttpObjectAggregator(
-              httpConfigs.parsing.maxHttpContentLength
+            Eval.always(new HttpServerKeepAliveHandler),
+            Eval.always(
+              new HttpObjectAggregator(
+                httpConfigs.parsing.maxHttpContentLength
+              )
             ),
-            new ReadTimeoutHandler( // TODO: this also closes channel when exception is fired, should HttpClientConnection just handle that Idle Events?
-              httpConfigs.requestTimeoutPeriod.length,
-              httpConfigs.requestTimeoutPeriod.unit
+            // TODO: this also closes channel when exception is fired, should HttpClientConnection just handle that Idle Events?
+            Eval.always(
+              new ReadTimeoutHandler(
+                httpConfigs.requestTimeoutPeriod.length,
+                httpConfigs.requestTimeoutPeriod.unit
+              )
             )
             // new HttpPipeliningBlockerHandler
-          ),
+          )
+        )
+      )
+
+      rawHttpClientConnection <- network
+        .serverResource(
+          host = None,
+          port = None,
+          pipeline,
           options = Nil
         )
         .map(_._2)
