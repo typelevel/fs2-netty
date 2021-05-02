@@ -14,18 +14,20 @@
  * limitations under the License.
  */
 
-package fs2
-package netty
+package fs2.netty
 
-import com.comcast.ip4s.{IpAddress, SocketAddress}
+import fs2.netty.pipeline.socket.Socket
+import io.netty.channel.socket.SocketChannel
+import io.netty.channel.{Channel, ChannelInitializer}
 
-trait Socket[F[_]] {
+trait NettyChannelInitializer[F[_], O, I] {
 
-  def localAddress: F[SocketAddress[IpAddress]]
-  def remoteAddress: F[SocketAddress[IpAddress]]
+  def toSocketChannelInitializer(
+    cb: Socket[F, O, I] => F[Unit]
+  ): F[ChannelInitializer[SocketChannel]] =
+    toChannelInitializer[SocketChannel](cb)
 
-  def reads: Stream[F, Byte]
-
-  def write(bytes: Chunk[Byte]): F[Unit]
-  def writes: Pipe[F, Byte, INothing]
+  def toChannelInitializer[C <: Channel](
+    cb: Socket[F, O, I] => F[Unit]
+  ): F[ChannelInitializer[C]]
 }

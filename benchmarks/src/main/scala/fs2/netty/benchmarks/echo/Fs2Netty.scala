@@ -29,7 +29,7 @@ object Fs2Netty extends IOApp {
     val port = Port(args(1).toInt).get
 
     val rsrc = Network[IO] flatMap { net =>
-      val handlers = net.server(host, port) map { client =>
+      val handlers = net.server(host, port, options = Nil) map { client =>
         client.reads.through(client.writes).attempt.void
       }
 

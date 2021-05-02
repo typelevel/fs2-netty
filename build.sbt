@@ -25,7 +25,7 @@ ThisBuild / organizationName := "Typelevel"
 
 ThisBuild / startYear := Some(2021)
 
-ThisBuild / crossScalaVersions := Seq("2.12.12", "2.13.4", "3.0.0-M3")
+ThisBuild / crossScalaVersions := Seq("2.12.12", "2.13.4")  // "3.0.0-M3" temporarily removed to easier/speedier
 
 ThisBuild / githubWorkflowOSes ++= Seq("macos-latest", "windows-latest")
 
