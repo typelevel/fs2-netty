@@ -30,8 +30,8 @@ object Fs2IO extends IOApp {
     val host = args(0)
     val port = args(1).toInt
 
-    val handlers = Network[IO].server(Host(host), Port(port)) map { client =>
-      client.reads(8096).through(client.writes).attempt.void
+    val handlers = Network[IO].server(Host.fromString(host), Port.fromInt(port)) map { client =>
+      client.reads.through(client.writes).attempt.void
     }
 
     handlers.parJoinUnbounded.compile.drain.as(ExitCode.Success)
