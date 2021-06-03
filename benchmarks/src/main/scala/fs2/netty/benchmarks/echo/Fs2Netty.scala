@@ -25,8 +25,8 @@ import com.comcast.ip4s.{Host, Port}
 
 object Fs2Netty extends IOApp {
   def run(args: List[String]): IO[ExitCode] = {
-    val host = Host(args(0))
-    val port = Port(args(1).toInt).get
+    val host = Host.fromString(args(0))
+    val port = Port.fromInt(args(1).toInt).get
 
     val rsrc = Network[IO] flatMap { net =>
       val handlers = net.server(host, port) map { client =>

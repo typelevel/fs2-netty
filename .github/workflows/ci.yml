@@ -9,9 +9,9 @@ name: Continuous Integration
 
 on:
   pull_request:
-    branches: ['*']
+    branches: ['**']
   push:
-    branches: ['*']
+    branches: ['**']
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -22,7 +22,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        scala: [2.12.12, 2.13.4, 3.0.0-M3]
+        scala: [2.12.14, 2.13.6, 3.0.0]
         java: [adopt@1.8]
     runs-on: ${{ matrix.os }}
     steps:
@@ -55,7 +55,7 @@ jobs:
 
       - name: Check that workflows are up to date
         shell: bash
-        run: sbt ++${{ matrix.scala }} githubWorkflowCheck
+        run: sbt --client '++${{ matrix.scala }}; githubWorkflowCheck'
 
       - shell: bash
-        run: sbt ++${{ matrix.scala }} ci
+        run: sbt --client '++${{ matrix.scala }}; ci'
