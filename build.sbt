@@ -39,7 +39,7 @@ lazy val core = project.in(file("core"))
   .settings(
     name := "fs2-netty",
     libraryDependencies ++= Seq(
-      "io.netty"     % "netty-all" % "4.1.56.Final",
+      "io.netty"     % "netty-all" % "4.1.65.Final",
       "com.comcast" %% "ip4s-core" % "3.0.3",
       "co.fs2"      %% "fs2-core"  % Fs2Version,
 
