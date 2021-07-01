@@ -29,7 +29,7 @@ ThisBuild / crossScalaVersions := Seq("2.12.14", "2.13.6", "3.0.0")
 
 ThisBuild / githubWorkflowOSes ++= Seq("macos-latest", "windows-latest")
 
-val Fs2Version = "3.0.4"
+val Fs2Version = "3.0.5"
 
 lazy val root = project.in(file("."))
   .aggregate(core, benchmarks)
