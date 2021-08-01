@@ -43,7 +43,7 @@ lazy val core = project.in(file("core"))
       "com.comcast" %% "ip4s-core" % "3.0.3",
       "co.fs2"      %% "fs2-core"  % Fs2Version,
 
-      "org.typelevel" %% "cats-effect-testing-specs2" % "1.1.1" % Test))
+      "org.typelevel" %% "cats-effect-testing-specs2" % "1.2.0" % Test))
 
 lazy val benchmarks = project.in(file("benchmarks"))
   .dependsOn(core)
