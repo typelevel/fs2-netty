@@ -17,16 +17,17 @@
 package fs2
 package netty
 
-import cats.effect.IO
 import cats.effect.testing.specs2.CatsResource
-import io.netty.buffer.Unpooled
+import cats.effect.{IO, Resource}
+import io.netty.buffer.{ByteBuf, Unpooled}
 import org.specs2.mutable.SpecificationLike
 
 import java.nio.charset.Charset
+import scala.collection.mutable.ListBuffer
 
 class NetworkSpec extends CatsResource[IO, Network[IO]] with SpecificationLike {
 
-  val resource = Network[IO]
+  override val resource: Resource[IO, Network[IO]] = Network[IO]
 
   "network tcp sockets" should {
     "create a network instance" in {
@@ -34,19 +35,12 @@ class NetworkSpec extends CatsResource[IO, Network[IO]] with SpecificationLike {
     }
 
     "support a simple echo use-case" in withResource { net =>
-      val data = (1 to 2) // TODO: this breaks with 3; client writes the last element, but server never reads.
-        .map(_.toString)
-        .toList
-        .map(str => {
-          (Unpooled.wrappedBuffer(str.getBytes()), str)
-        })
+      val msg = "Echo me"
 
       val rsrc = net.serverResource(None, None, Nil) flatMap {
-        case (isa, incoming) =>
+        case (ip, incoming) =>
           val handler = incoming flatMap { socket =>
             socket.reads
-              // Without retain, the client seemingly gets the exact same ByteBuf that server processes. This results
-              // in exceptions as both client and server release ByteBuf. The root cause is unclear.
               .evalTap(bb => IO(bb.retain()))
               .through(socket.writes)
           }
@@ -54,26 +48,50 @@ class NetworkSpec extends CatsResource[IO, Network[IO]] with SpecificationLike {
           for {
             _ <- handler.compile.drain.background
 
-            results <- net.client(isa, options = Nil) flatMap { cSocket =>
+            results <- net.client(ip, options = Nil) flatMap { cSocket =>
               Stream
-                .emits(data)
-                .map(_._1)
+                // Send individual bytes as the simplest use case
+                .emits(msg.getBytes)
+                .evalMap(byteToByteBuf)
                 .through(cSocket.writes)
                 .merge(cSocket.reads)
-                .take(data.length.toLong)
-                .evalMap(bb => IO(bb.toString(Charset.defaultCharset())))
+                .flatMap(byteBufToStream)
+                .take(msg.length.toLong)
+                .map(byteToString)
                 .compile
                 .resource
                 .toList
+                .map(_.mkString)
             }
           } yield results
       }
 
       rsrc.use(IO.pure) flatMap { results =>
         IO {
-          results mustEqual data.map(_._2)
+          results mustEqual msg
         }
       }
     }
+  }
+
+  private def byteToByteBuf(byte: Byte): IO[ByteBuf] = IO {
+    val arr = new Array[Byte](1)
+    arr(0) = byte
+    Unpooled.wrappedBuffer(new String(arr).getBytes())
+  }
+
+  private def byteBufToStream(bb: ByteBuf): Stream[IO, Byte] = {
+    val buffer = new ListBuffer[Byte]
+    bb.forEachByte((value: Byte) => {
+      val _ = buffer.addOne(value)
+      true
+    })
+    Stream.fromIterator[IO].apply[Byte](buffer.iterator, 1)
+  }
+
+  private def byteToString(b: Byte): String = {
+    val arr = new Array[Byte](1)
+    arr(0) = b
+    new String(arr, Charset.defaultCharset())
   }
 }
