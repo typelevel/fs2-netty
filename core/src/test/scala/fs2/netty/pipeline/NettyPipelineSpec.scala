@@ -1,7 +1,7 @@
 package fs2.netty.pipeline
 
 import cats.Eval
-import cats.effect.std.Dispatcher
+import cats.effect.std.{Dispatcher, Queue}
 import cats.effect.testing.specs2.CatsResource
 import cats.effect.{IO, Resource}
 import cats.syntax.all._
@@ -21,157 +21,230 @@ import io.netty.handler.codec.string.StringDecoder
 import io.netty.util.ReferenceCountUtil
 import org.specs2.mutable.SpecificationLike
 
+import java.nio.channels.ClosedChannelException
 import java.util
+import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration._
 
 class NettyPipelineSpec
     extends CatsResource[IO, Dispatcher[IO]]
     with SpecificationLike {
 
-  // TODO: where does 10s timeout come from?
   override val resource: Resource[IO, Dispatcher[IO]] = Dispatcher[IO]
 
-  "default pipeline, i.e. no extra Channel handlers" should {
-    "zero reads in Netty corresponds to an empty fs2-netty ByteBuf reads stream" in withResource {
-      dispatcher =>
-        for {
-          pipeline <- NettyPipeline[IO](dispatcher)
-          socket <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](
-            pipeline
-          ).map(_._2)
-
-          reads <- socket.reads
-            .interruptAfter(1.second)
-            .compile
-            .toList // TODO: what's the proper way to check for empty stream?
-        } yield reads should beEmpty
-    }
-
-    "zero events in Netty pipeline corresponds to an empty fs2-netty events stream" in withResource {
-      dispatcher =>
-        for {
-          pipeline <- NettyPipeline[IO](dispatcher)
-          socket <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](
-            pipeline
-          ).map(_._2)
-
-          events: List[AnyRef] <- socket.events
-            .interruptAfter(1.second)
-            .compile
-            .toList
-        } yield events should beEmpty
-    }
-
-    "reads from Netty appear in fs2-netty as reads stream as ByteBuf objects" in withResource {
-      dispatcher =>
+  "default pipeline, i.e. no extra Channel handlers and reads and writes are on ByteBuf's" should {
+    "no activity on Netty channel should correspond to no activity on socket and vice-versa" in withResource {
+      implicit dispatcher =>
         for {
           // Given a socket and embedded channel from the default Netty Pipeline
-          pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
+          x <- NettyEmbeddedChannelWithByteBufPipeline
           (channel, socket) = x
 
-          // Then configs should be setup, like autoread should be false...maybe move to top test?
+          // Then configs should be setup for backpressure
           _ <- IO(channel.underlying.config().isAutoRead should beFalse)
           _ <- IO(channel.underlying.config().isAutoClose should beTrue)
+          _ <- IO(
+            channel.underlying
+              .config()
+              .getWriteBufferLowWaterMark shouldEqual 32 * 1024
+          )
+          _ <- IO(
+            channel.underlying
+              .config()
+              .getWriteBufferHighWaterMark shouldEqual 64 * 1024
+          )
 
-          // And list of single byte ByteBuf's
-          encoder = implicitly[Encoder[Byte]]
-          byteBufs = "hello world".getBytes().map(encoder.encode)
+          // When flushing inbound events, i.e. calling read complete, on an empty channel
+          _ <- channel.flushInbound()
 
-          // When writing each ByteBuf individually to the channel
+          // Then there are no reads on socket reads stream
+          // TODO: what's the canonical way to check for empty stream?
+          reads <- socket.reads
+            .interruptAfter(Duration.Zero)
+            .compile
+            .toList
+          _ <- IO(reads should beEmpty)
+
+          // When trigger Netty to run events when there aren't any to run
+          nextTaskTime <- channel.runScheduledPendingTasks
+          _ <- IO(nextTaskTime shouldEqual Fs2NettyEmbeddedChannel.NoTasksToRun)
+
+          // Then there should be no events on the socket events stream
+          events: List[AnyRef] <- socket.events
+            .interruptAfter(Duration.Zero)
+            .compile
+            .toList
+          _ <- IO(events should beEmpty)
+
+          // When there's no activity on Netty channel, but channel is still active
+          _ <- IO(channel.isOpen)
+
+          // Then there should not be any exceptions
+          isOpen <- socket.isOpen
+          _ <- IO(isOpen shouldEqual true)
+          isClosed <- socket.isClosed
+          _ <- IO(isClosed shouldEqual false)
+
+          // When there's no activity on socket writes
+          _ <- channel.flushOutbound()
+
+          // Then there's no message on Netty channel outbound queue
+          writes <- channel.outboundMessages
+          _ <- IO(writes.isEmpty shouldEqual true)
+
+          // And finally, no exceptions on the Netty channel
+          _ <- IO(channel.underlying.checkException())
+        } yield ok
+    }
+
+    "reading on socket without backpressure results in from Netty reading onto its channel" in withResource {
+      implicit dispatcher =>
+        for {
+          // Given a socket and embedded channel from the default Netty Pipeline
+          x <- NettyEmbeddedChannelWithByteBufPipeline
+          (channel, socket) = x
+
+          // And list of ByteBuf's
+          byteBufs <- IO(
+            List(
+              Unpooled.wrappedBuffer("hello".getBytes),
+              Unpooled.buffer(1, 1).writeByte(' '),
+              Unpooled.copiedBuffer("world".getBytes)
+            )
+          )
+
+          // And a socket that doesn't backpressure reads, i.e. always accepts elements from stream
+          queue <- Queue.unbounded[IO, String]
+          _ <- socket.reads
+            .flatMap(byteBufToByteStream)
+            .map(byteToString)
+            .evalMap(queue.offer)
+            .compile
+            .drain
+            .background
+            .use { _ =>
+              for {
+                // When writing each ByteBuf individually to the channel
+                _ <- channel
+                  .writeAllInboundThenFlushThenRunAllPendingTasks(byteBufs: _*)
+
+                // Then messages should be consumed from Netty
+                _ <- IO.sleep(200.millis)
+                _ <- IO(
+                  channel.underlying.areInboundMessagesBuffered shouldEqual false
+                )
+
+                // And reads on socket yield the original message sent on channel
+                str <- (0 until "hello world".length).toList
+                  .traverseFilter(_ => queue.tryTake)
+                  .map(_.mkString)
+                _ <- IO(str shouldEqual "hello world")
+
+                // And ByteBuf's should be released
+                _ <- IO(byteBufs.map(_.refCnt()) shouldEqual List.fill(3)(0))
+              } yield ()
+            }
+        } yield ok
+    }
+
+    "backpressure on socket reads results in Netty NOT reading onto its channel" in withResource {
+      implicit dispatcher =>
+        for {
+          // Given a socket and embedded channel from the default Netty Pipeline
+          x <- NettyEmbeddedChannelWithByteBufPipeline
+          (channel, socket) = x
+
+          // And list of ByteBuf's
+          byteBufs <- IO(
+            List(
+              Unpooled.wrappedBuffer("hello".getBytes),
+              Unpooled.buffer(1, 1).writeByte(' '),
+              Unpooled.copiedBuffer("world".getBytes)
+            )
+          )
+
+          // And a socket with backpressure, i.e. socket reads aren't being consumed
+
+          // When writing each ByteBuf to the channel
           areMsgsAdded <- channel
             .writeAllInboundThenFlushThenRunAllPendingTasks(byteBufs: _*)
 
-          // Then messages aren't added to the inbound buffer because autoread should be off
+          // Then messages are NOT added onto the Netty channel
+          _ <- IO.sleep(
+            200.millis
+          ) // give fs2-Netty chance to read like in non-backpressure test
           _ <- IO(areMsgsAdded should beFalse)
+          _ <- IO(
+            channel.underlying.areInboundMessagesBuffered shouldEqual true
+          )
 
           // And reads on socket yield the original message sent on channel
           str <- socket.reads
-            .map(_.readByte())
+            .flatMap(byteBufToByteStream)
             .take(11)
-            .foldMap(byteToString)
+            .map(byteToString)
             .compile
-            .last
-          _ <- IO(str shouldEqual "hello world".some)
+            .toList
+            .map(_.mkString)
+          _ <- IO(str shouldEqual "hello world")
 
           // And ByteBuf's should be released
-          _ <- IO(byteBufs.map(_.refCnt()) shouldEqual Array.fill(11)(0))
+          _ <- IO(byteBufs.map(_.refCnt()) shouldEqual List.fill(3)(0))
         } yield ok
     }
 
-    "writing ByteBuf's onto fs2-netty socket appear on Netty's channel" in withResource {
-      dispatcher =>
+    "writing onto fs2-netty socket appear on Netty's channel" in withResource {
+      implicit dispatcher =>
         for {
-          pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
+          // Given a socket and embedded channel from the default Netty Pipeline
+          x <- NettyEmbeddedChannelWithByteBufPipeline
           (channel, socket) = x
 
-          encoder = implicitly[Encoder[Byte]]
-          byteBufs = "hello world".getBytes().map(encoder.encode).toList
-          // TODO: make resource?
-//          _ <- IO.unit.guarantee(IO(byteBufs.foreach(ReferenceCountUtil.release)))
+          // And list of ByteBuf's
+          byteBufs <- IO(
+            List(
+              Unpooled.wrappedBuffer("hello".getBytes),
+              Unpooled.buffer(1, 1).writeByte(' '),
+              Unpooled.copiedBuffer("world".getBytes)
+            )
+          )
 
+          // When writing each ByteBuf to the socket
           _ <- byteBufs.traverse(socket.write)
 
-          str <- (0 until 11).toList
-            .traverse { _ =>
-              IO(channel.underlying.readOutbound[ByteBuf]())
-                .flatMap(bb => IO(bb.readByte()))
-            }
-            .map(_.toArray)
-            .map(new String(_))
-
-          _ <- IO(str shouldEqual "hello world")
-        } yield ok
-    }
-
-    "piping any reads to writes just echos back ByteBuf's written onto Netty's channel" in withResource {
-      dispatcher =>
-        for {
-          pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
-          (channel, socket) = x
-
-          encoder = implicitly[Encoder[Byte]]
-          byteBufs = "hello world".getBytes().map(encoder.encode).toList
-
-          _ <- channel
-            .writeAllInboundThenFlushThenRunAllPendingTasks(byteBufs: _*)
-          _ <- socket.reads
-            // fs2-netty automatically releases
-            .evalMap(bb => IO(bb.retain()))
+          // Then Netty channel has messages in its outbound queue
+          str <- Stream
+            .fromIterator[IO]((0 until 3).iterator, chunkSize = 100)
+            .evalMap(_ => IO(channel.underlying.readOutbound[ByteBuf]()))
+            .flatMap(byteBufToByteStream)
             .take(11)
-            .through(socket.writes)
+            .map(byteToString)
             .compile
-            .drain
-
-          str <- (0 until 11).toList
-            .traverse { _ =>
-              IO(channel.underlying.readOutbound[ByteBuf]())
-                .flatMap(bb => IO(bb.readByte()))
-            }
-            .map(_.toArray)
-            .map(new String(_))
-
+            .toList
+            .map(_.mkString)
           _ <- IO(str shouldEqual "hello world")
+
+          // And ByteBuf's are not released. Embedded channel doesn't release, but real channel should.
+          _ <- IO(byteBufs.map(_.refCnt()) shouldEqual List.fill(3)(1))
+          _ <- IO.unit.guarantee(
+            IO(byteBufs.foreach(ReferenceCountUtil.release))
+          )
         } yield ok
     }
 
     "closed connection in Netty appears as closed streams in fs2-netty" in withResource {
-      dispatcher =>
+      implicit dispatcher =>
         for {
-          pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
+          x <- NettyEmbeddedChannelWithByteBufPipeline
           (channel, socket) = x
 
           // Netty sanity check
           _ <- channel.isOpen.flatMap(isOpen => IO(isOpen should beTrue))
           _ <- socket.isOpen.flatMap(isOpen => IO(isOpen should beTrue))
 
-          // TODO: wrapper methods for underlying
           _ <- channel.close()
 
-          // Netty sanity check, maybe move these to their own test file for Embedded Channel
+          // Netty sanity check
           _ <- channel.isClosed.flatMap(isClosed => IO(isClosed should beTrue))
           _ <- socket.isOpen.flatMap(isOpen => IO(isOpen should beFalse))
           _ <- socket.isClosed.flatMap(isClosed => IO(isClosed should beTrue))
@@ -179,10 +252,9 @@ class NettyPipelineSpec
     }
 
     "closing connection in fs2-netty closes underlying Netty channel" in withResource {
-      dispatcher =>
+      implicit dispatcher =>
         for {
-          pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
+          x <- NettyEmbeddedChannelWithByteBufPipeline
           (channel, socket) = x
 
           _ <- socket.close()
@@ -193,11 +265,34 @@ class NettyPipelineSpec
         } yield ok
     }
 
-    "exceptions in Netty pipeline raises an exception on the reads stream" in withResource {
-      dispatcher =>
+    "writing onto a closed socket is a no-op and throws an exception" in withResource {
+      implicit dispatcher =>
         for {
-          pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
+          x <- NettyEmbeddedChannelWithByteBufPipeline
+          (channel, socket) = x
+          _ <- channel.close()
+
+          byteBuf <- IO(Unpooled.wrappedBuffer("hi".getBytes))
+          caughtClosedChannelException <- socket
+            .write(byteBuf)
+            .as(false)
+            .handleErrorWith {
+              case _: ClosedChannelException => true.pure[IO]
+              case _ => false.pure[IO]
+            }
+
+          _ <- IO(caughtClosedChannelException shouldEqual true)
+
+          _ <- channel.outboundMessages.flatMap(out =>
+            IO(out.isEmpty shouldEqual true)
+          )
+        } yield ok
+    }
+
+    "exceptions in Netty pipeline raises an exception on the reads stream" in withResource {
+      implicit dispatcher =>
+        for {
+          x <- NettyEmbeddedChannelWithByteBufPipeline
           (channel, socket) = x
 
           _ <- IO(
@@ -211,14 +306,17 @@ class NettyPipelineSpec
             .handleErrorWith(t => Stream.emit(t.getMessage))
             .compile
             .last
-        } yield errMsg shouldEqual "unit test error".some
+          _ <- IO(errMsg shouldEqual "unit test error".some)
+
+          _ <- channel.isOpen.flatMap(isOpen => IO(isOpen shouldEqual true))
+          _ <- socket.isOpen.flatMap(isOpen => IO(isOpen shouldEqual true))
+        } yield ok
     }
 
     "pipeline events appear in fs2-netty as events stream" in withResource {
-      dispatcher =>
+      implicit dispatcher =>
         for {
-          pipeline <- NettyPipeline[IO](dispatcher)
-          x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
+          x <- NettyEmbeddedChannelWithByteBufPipeline
           (channel, socket) = x
 
           _ <- IO(
@@ -458,6 +556,23 @@ class NettyPipelineSpec
 }
 
 object NettyPipelineSpec {
+
+  private def NettyEmbeddedChannelWithByteBufPipeline(implicit
+    dispatcher: Dispatcher[IO]
+  ) =
+    for {
+      pipeline <- NettyPipeline[IO](dispatcher)
+      x <- Fs2NettyEmbeddedChannel[IO, ByteBuf, ByteBuf](pipeline)
+    } yield x
+
+  private def byteBufToByteStream(bb: ByteBuf): Stream[IO, Byte] = {
+    val buffer = new ListBuffer[Byte]
+    bb.forEachByte((value: Byte) => {
+      val _ = buffer.addOne(value)
+      true
+    })
+    Stream.fromIterator[IO](buffer.iterator, 1)
+  }
 
   /**
     * Does not use MessageToMessageDecoder, SimpleChannelInboundHandler, or anything that extends ChannelHandlerAdapter.

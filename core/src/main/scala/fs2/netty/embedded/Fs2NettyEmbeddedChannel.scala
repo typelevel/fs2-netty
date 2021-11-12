@@ -25,6 +25,9 @@ import fs2.netty.pipeline.socket.Socket
 import io.netty.buffer.{ByteBuf, Unpooled}
 import io.netty.channel.embedded.EmbeddedChannel
 
+import java.util
+import java.util.Queue
+
 /**
   * Better, safer, and clearer api for testing channels
   * For use in tests only.
@@ -67,6 +70,18 @@ final case class Fs2NettyEmbeddedChannel[F[_]] private (
 
   def flushInbound(): F[Unit] = F.delay(underlying.flushInbound()).void
 
+  def flushOutbound(): F[Unit] = F.delay(underlying.flushOutbound()).void
+
+  def inboundMessages: F[util.Queue[AnyRef]] =
+    F.delay(underlying.inboundMessages())
+
+  def outboundMessages: F[util.Queue[AnyRef]] =
+    F.delay(underlying.outboundMessages())
+
+  def runScheduledPendingTasks: F[Long] = F.delay {
+    underlying.runScheduledPendingTasks()
+  }
+
   def isOpen: F[Boolean] = F.pure(underlying.isOpen)
 
   def isClosed: F[Boolean] = F.pure(!underlying.isOpen)
@@ -75,6 +90,8 @@ final case class Fs2NettyEmbeddedChannel[F[_]] private (
 }
 
 object Fs2NettyEmbeddedChannel {
+
+  val NoTasksToRun: Long = -1L
 
   def apply[F[_], O, I](
     initializer: NettyChannelInitializer[F, O, I]

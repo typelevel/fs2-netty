@@ -34,6 +34,8 @@ class EmbeddedChannelWithAutoRead extends EmbeddedChannel {
   private lazy val tempInboundMessages =
     new util.ArrayDeque[util.AbstractMap.SimpleEntry[Any, ChannelPromise]]()
 
+  def areInboundMessagesBuffered: Boolean = !tempInboundMessages.isEmpty
+
   def writeInboundFixed(msgs: Any*): Boolean = {
     ensureOpen()
     if (msgs.isEmpty)
@@ -136,17 +138,5 @@ class EmbeddedChannelWithAutoRead extends EmbeddedChannel {
       val _ = flushInbound()
     }
 
-  }
-
-  private def debug(x: Any) = x match {
-    case bb: ByteBuf =>
-      val b = bb.readByte()
-      bb.resetReaderIndex()
-      val arr = Array[Byte](1)
-      arr(0) = b
-      new String(arr)
-
-    case _ =>
-      ""
   }
 }
