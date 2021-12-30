@@ -139,10 +139,9 @@ object Network {
   }
 
   def apply[F[_]: Async]: Resource[F, Network[F]] = {
-    // TODO configure threads
-    def instantiate(name: String) = Sync[F] delay {
+    def instantiate(name: String, numThreads: Int) = Sync[F] delay {
       val constr = eventLoopClazz.getDeclaredConstructor(classOf[Int], classOf[ThreadFactory])
-      val result = constr.newInstance(new Integer(1), new ThreadFactory {
+      val result = constr.newInstance(new Integer(numThreads), new ThreadFactory {
         private val ctr = new AtomicInteger(0)
         def newThread(r: Runnable): Thread = {
           val t = new Thread(r)
@@ -156,12 +155,12 @@ object Network {
       result.asInstanceOf[EventLoopGroup]
     }
 
-    def instantiateR(name: String) =
-      Resource.make(instantiate(name)) { elg =>
+    def instantiateR(name: String, numThreads: Int) =
+      Resource.make(instantiate(name, numThreads)) { elg =>
         fromNettyFuture[F](Sync[F].delay(elg.shutdownGracefully())).void
       }
 
-    (instantiateR("server"), instantiateR("client")) mapN { (server, client) =>
+    (instantiateR("server", 1), instantiateR("client", Runtime.getRuntime.availableProcessors())) mapN { (server, client) =>
       try {
         val meth = eventLoopClazz.getDeclaredMethod("setIoRatio", classOf[Int])
         meth.invoke(server, new Integer(90))    // TODO tweak this a bit more; 100 was worse than 50 and 90 was a dramatic step up from both
