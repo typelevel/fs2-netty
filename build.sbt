@@ -27,7 +27,7 @@ ThisBuild / startYear := Some(2021)
 
 ThisBuild / crossScalaVersions := Seq("2.12.14", "2.13.6", "3.0.2")
 
-ThisBuild / githubWorkflowOSes ++= Seq("macos-latest", "windows-latest")
+ThisBuild / githubWorkflowOSes ++= Seq("macos-latest", "windows-2022")
 
 val Fs2Version = "3.0.4"
 
